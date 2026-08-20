@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- `teams message undelete` restores a message removed with `message delete`, through the Graph `undoSoftDelete` action.
+- `message list` and `message get` include `deletedDateTime` on soft-deleted messages.
+
+### Changed
+
+- `teams message delete` now calls the Graph `softDelete` action and accepts `--chat <chat-id>` as well as the `--team`/`--channel` pair, plus `--reply <reply-id>` for channel thread replies. Deletion must be confirmed with `--yes`; without it the command exits with code 2 and sends nothing. On success the message is read back so the output shows `deletedDateTime`.
+
+### Fixed
+
+- `teams message delete` previously sent the DELETE verb, which Microsoft Graph rejects for messages ("Requested API is not supported"), so the command could never delete anything.
+
 ## v0.7.0 - 2026-09-06
 
 ### Added
@@ -58,6 +71,7 @@
 - `teams presence get` no longer fails with `API error (200): Failed to parse API response` when the target's Teams status message carries an expiry. Microsoft Graph sends `statusMessage.expiryDateTime` as a `dateTimeTimeZone` object, not a string, so both `GET /me/presence` and `GET /users/{id}/presence` failed to deserialize for any account with an expiring status message. This resolves #69.
 - On Windows, `teams auth login` no longer fails with `KEYRING_ERROR: ... longer than platform limit of 2560 chars` after a successful sign-in. Credential Manager caps a credential at 2560 bytes and a Microsoft Graph token bundle is routinely larger, so the serialized token is now split across `<profile>:token:<n>` entries with a `<profile>:token` header; `auth logout` removes every piece. macOS and Linux keep a single keychain item as before. This resolves #67.
 - `teams auth logout` now reports a failure to delete the stored token instead of silently succeeding and leaving it in the keyring. A profile with no stored token still logs out cleanly.
+
 ## v0.4.0 - 2026-08-19
 
 ### Added
