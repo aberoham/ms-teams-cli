@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- `teams message undelete` restores a message removed with `message delete`, through the Graph `undoSoftDelete` action.
+- `message list` and `message get` include `deletedDateTime` on soft-deleted messages.
+
+### Changed
+
+- `teams message delete` now calls the Graph `softDelete` action and accepts `--chat <chat-id>` as well as the `--team`/`--channel` pair, plus `--reply <reply-id>` for channel thread replies. Deletion must be confirmed with `--yes`; without it the command exits with code 2 and sends nothing. On success the message is read back so the output shows `deletedDateTime`.
+
+### Fixed
+
+- `teams message delete` previously sent the DELETE verb, which Microsoft Graph rejects for messages ("Requested API is not supported"), so the command could never delete anything.
+
 ## v0.4.0 - 2026-08-19
 
 ### Added
