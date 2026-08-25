@@ -8,6 +8,10 @@ on:
 
 jobs:
   tag:
+    # Disabled in fork aberoham/ms-teams-cli — alphas are cut via manual tag
+    # push (git tag vX.Y.Z-alpha.N && git push fork tag). Keep upstream
+    # behavior for osodevops/ms-teams-cli only.
+    if: github.repository == 'osodevops/ms-teams-cli'
     runs-on: ubuntu-latest
     permissions:
       contents: read
