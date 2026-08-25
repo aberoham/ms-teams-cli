@@ -220,7 +220,7 @@ jobs:
     # Deferred for fork alphas — Windows testers can download the zip from
     # GitHub Releases directly. Re-enable by removing the guard and wiring
     # SCOOP_BUCKET_TOKEN for aberoham/scoop-bucket.
-    if: false
+    if: ${{ false }}
     permissions: {}
     steps:
       - name: Trigger Scoop bucket update
