@@ -113,7 +113,8 @@ teams message attachments list (--team TEAM_ID --channel CHANNEL_ID [--reply REP
 teams message attachments download (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) [--index N] [--dir DIR | --path FILE]
 teams message reply --team TEAM_ID --channel CHANNEL_ID --message-id MESSAGE_ID [--body TEXT | --stdin] [--content-type text|html] [--image PATH]... [--attach PATH]...
 teams message update (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) --body TEXT [--content-type text|html]
-teams message delete --team TEAM_ID --channel CHANNEL_ID (MESSAGE_ID | --message MESSAGE_ID)
+teams message delete (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) --yes
+teams message undelete (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID)
 teams message react (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID) --message-id MESSAGE_ID (REACTION | --reaction REACTION)
 teams message unreact (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID) --message-id MESSAGE_ID (REACTION | --reaction REACTION)
 teams message pin --team TEAM_ID --channel CHANNEL_ID (MESSAGE_ID | --message MESSAGE_ID)
@@ -125,6 +126,8 @@ Normal message mutation requires delegated auth. App-only/client-credentials tok
 `REACTION` is an emoji character or one of the names the CLI translates for you (`like`, `heart`, `laugh`, `surprised`, `sad`, `angry`, `thumbsup`, `thumbsdown`, `eyes`, `tada`, `rocket`, `fire`). Graph only accepts the emoji character on writes.
 
 `message update` edits your own message in place (Graph lets a delegated caller change any property except `policyViolation`); channel edits need the `ChannelMessage.ReadWrite` delegated scope, chat edits need `Chat.ReadWrite`. Graph returns no content on success, so the command reads the message back and prints it; if that read fails the edit has still been applied and the output is `{"id": ..., "updated": true, "readBackError": ...}`.
+
+`message delete` soft-deletes your own message through the Graph `softDelete` action (Graph does not support the DELETE verb on messages); `message undelete` reverses it with `undoSoftDelete`. Both are delegated-only. Chat targets need `Chat.ReadWrite`; channel posts and replies need the `ChannelMessage.ReadWrite` delegated scope, which the default login does not request. Deletion must be confirmed with `--yes`: without it the command exits with code 2 and sends nothing. Graph returns no content on success, and answers 204 again for a message that is already deleted, so each command reads the message back and prints it: a deleted message has `deletedDateTime` set and an empty body, a restored one has it cleared. If the read-back fails the change has still been applied and the output is `{"id": ..., "deleted": true, "readBackError": ...}` (or `"restored"`).
 
 `--image` sends a picture the way pasting a screenshot does — the bytes travel inside the message itself (a Graph "hosted content"), so it needs no scopes beyond sending messages. `--attach` uploads the file to real storage first (your OneDrive's `Microsoft Teams Chat Files` for chats, the team's SharePoint library for channels) and links it from the message; that upload needs `Files.ReadWrite` (chats) or `Files.ReadWrite.All` (channels). Both flags repeat for multiple files, and `--body` becomes optional when either is present. Inline images are capped at 3MB each; attachments use Graph's 250MB simple-upload limit.
 
