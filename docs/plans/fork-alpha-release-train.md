@@ -31,16 +31,16 @@ repeat it for the two Go repos with the deltas noted below.
 - Homebrew distribution overwrites the `teams` binary in the personal tap
   `aberoham/tap`. Side-by-side coexistence via a second formula or binary
   alias `teams-next` is deferred until someone needs both kegs on one machine.
-  See section 7 for the deep trade-off.
+  See section 8 for the deep trade-off.
 - Scoop buckets are deferred. First alpha will ship only GitHub Releases and
   Homebrew. Scoop is Windows-only and the verification step can be re-added
   later behind a flag.
 - Private entra work is gated on a public mirror. Cutting installable Homebrew
   packages from an `internal` repo is not possible without moving code to a
-  public repo. Noted as prerequisite in section 8.
+  public repo. Noted as prerequisite in section 7 and risks in section 9.
 - Prerelease version base floats ahead of upstream head. If `next` falls
   behind `origin/main`, rebase `next` onto `main` and bump the next tag to a
-  version larger than both heads, keeping the suffix. See section 6.
+  version larger than both heads, keeping the suffix. See section 4, Versioning and rebasing.
 
 ## 1. Survey — what Sion Smith runs upstream for teams
 

@@ -218,9 +218,10 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     # Deferred for fork alphas — Windows testers can download the zip from
-    # GitHub Releases directly. Re-enable by removing the guard and wiring
-    # SCOOP_BUCKET_TOKEN for aberoham/scoop-bucket.
-    if: ${{ false }}
+    # GitHub Releases directly. Re-enable by setting the repository variable
+    # PUBLISH_SCOOP=true and wiring SCOOP_BUCKET_TOKEN for
+    # aberoham/scoop-bucket.
+    if: vars.PUBLISH_SCOOP == 'true'
     permissions: {}
     steps:
       - name: Trigger Scoop bucket update

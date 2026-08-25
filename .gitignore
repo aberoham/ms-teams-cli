@@ -17,3 +17,6 @@ config.toml
 # OS artifacts
 .DS_Store
 Thumbs.db
+
+# Local session scratch — never commit
+/tmp/
