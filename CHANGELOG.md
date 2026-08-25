@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## v0.5.0-alpha.1 - 2026-08-25
+
+First alpha from the `next` integration branch. Collects all ahead branches that have not yet landed upstream:
+
+- Presence writes: delegated Presence.ReadWrite scopes, application sessionId, clearPresence diagnostics, status message expiry shape (fix/presence-writes, fix/presence-status-expiry).
+- Windows credential chunking for tokens larger than 2560 bytes (fix/windows-credential-chunking).
+- `teams auth list` identity reporting per profile with decoded user, tenant, auth type and expiry (feat/auth-list-identities).
+- `teams message delete` via Graph softDelete and `teams message undelete` via undoSoftDelete with `--chat` and `--reply` support and `--yes` guard (feat/message-soft-delete).
+- Fork pipeline: Homebrew dispatch to `aberoham/homebrew-tap`, prerelease flag on GitHub Releases, Scoop gated, auto-tag limited to upstream.
+
+Version is `0.5.0-alpha.1` so that it sorts before the next upstream stable `0.5.0`. Install from the fork with `brew tap aberoham/tap && brew install aberoham/tap/teams-cli` or from the prerelease tarballs on the GitHub Releases page.
+
 ### Added
 
 - `teams auth list` reports, for each profile, the signed-in `user`, `tenant_id`, and `auth_type` (`delegated`, `app-only`, or `unknown`) decoded from the stored token's claims, plus the stored token's `expires_at`, without any network call. A profile whose token cannot be read or decoded is still listed with those fields `null`. This resolves #54.
