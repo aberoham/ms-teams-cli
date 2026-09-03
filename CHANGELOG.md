@@ -5,7 +5,7 @@
 ### Added
 
 - `teams message send --subject TEXT` sets the subject line on a channel root message — the bold title Teams renders above the body, the same field the client offers behind "Add a subject". Channel sends only: chat messages have no subject, so `--subject` with `--chat` (or without `--channel`) is rejected as invalid input before anything is sent.
-- `teams message list --team T --channel C --message-id ROOT` lists the replies under one channel thread root, paged like any other listing. Without it a caller could not tell whether a question had already been answered, because the channel listing returns thread roots only and reply ids are not discoverable from anywhere else.
+- `teams message list --team T --channel C --message-id ROOT` lists the replies under one channel thread root, paged like any other listing. Without it a caller could not tell from the existing channel-list output whether a question had already been answered, because that listing returns thread roots only.
 - `teams message reply --mention USER` (repeatable) tags a person in a threaded reply the same way `message send --mention` does, so a name in a reply notifies rather than merely appears.
 
 ### Fixed
