@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Plain lists retain optional fields that first appear after the first row, including message subjects. Human message lists include a Subject column; JSON still omits absent subjects.
 - `message list` and `message get` no longer drop the `subject` of a message. The `ChatMessage` model had no `subject` field, so a channel root message's subject — returned by Graph on both reads — silently vanished from every output: a message posted with a subject read back without one. Messages without a subject are unchanged and gain no `"subject": null` noise.
 
 ## v0.6.0 - 2026-08-30
