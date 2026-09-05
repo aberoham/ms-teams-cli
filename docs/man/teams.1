@@ -200,6 +200,16 @@ array, so the CLI builds both: a plain-text body is converted to HTML (escaped,
 line breaks preserved), the <at> elements are prepended to the body in flag
 order, and a mention by itself counts as a body. Raw <at> markup typed into an
 HTML body is rejected before anything is sent.
+.PP
+.B message send --chat CHAT_ID --attach FILE
+uploads into the sender's OneDrive and attempts to grant the chat's other
+members read access without notification email. Discovery needs User.Read
+and a chat-member read scope such as Chat.ReadBasic; upload and sharing
+need Files.ReadWrite. Object IDs are used only when the roster confirms
+the sender and recipient share a tenant; other recipients use email.
+Lookup failures, members without a usable address, and grant failures
+warn on stderr with manual OneDrive sharing guidance. Lookup or sharing
+failures do not stop upload/send.
 .SH CHAT COMMANDS
 .nf
 teams chat list
