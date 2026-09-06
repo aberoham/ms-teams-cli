@@ -589,6 +589,72 @@ fn message_send_help_advertises_repeatable_mention_flag() {
 }
 
 #[test]
+fn message_send_help_advertises_subject_flag() {
+    teams()
+        .args(["message", "send", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--subject <SUBJECT>"));
+}
+
+#[test]
+fn help_json_includes_message_subject_flag() {
+    let result = teams().arg("--help-json").assert().success();
+    let help: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    let message = help["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|command| command["name"] == "message")
+        .unwrap();
+    let send = message["subcommands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|command| command["name"] == "send")
+        .unwrap();
+    assert!(send["flags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|flag| flag["name"] == "--subject"));
+}
+
+#[test]
+fn message_send_rejects_subject_on_chat_messages() {
+    teams()
+        .args([
+            "message",
+            "send",
+            "--chat",
+            "19:chat@thread.v2",
+            "--subject",
+            "Release plan",
+            "--body",
+            "hi",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--subject"));
+}
+
+#[test]
+fn message_send_rejects_subject_without_a_channel() {
+    teams()
+        .args([
+            "message",
+            "send",
+            "--subject",
+            "Release plan",
+            "--body",
+            "hi",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--subject"));
+}
+
+#[test]
 fn message_documented_flags_are_available() {
     teams()
         .args(["message", "get", "--help"])

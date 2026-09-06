@@ -7,8 +7,8 @@ use crate::auth;
 use crate::config::ConfigFile;
 use crate::error::{Result, TeamsError};
 use crate::models::message::{
-    ChatMessageAttachment, ChatMessageMention, ChatMessageMentioned, ChatMessageUser, ItemBody,
-    SendMessageRequest,
+    ChatMessage, ChatMessageAttachment, ChatMessageMention, ChatMessageMentioned, ChatMessageUser,
+    ItemBody, SendMessageRequest,
 };
 use crate::models::user::User;
 use crate::output::{self, OutputFormat};
@@ -47,6 +47,9 @@ pub enum MessageCommand {
         /// User to @mention (repeatable): an Entra object ID or UPN
         #[arg(long, value_name = "USER")]
         mention: Vec<String>,
+        /// Subject line for a channel root message
+        #[arg(long, requires = "channel", conflicts_with = "chat")]
+        subject: Option<String>,
     },
     /// List messages in a channel or chat
     List {
@@ -295,6 +298,7 @@ pub async fn run(
             image,
             attach,
             mention,
+            subject,
         } => {
             let start = Instant::now();
             auth::require_delegated_token(&client.token, "Sending Teams messages")?;
@@ -308,6 +312,7 @@ pub async fn run(
             let identities = resolve_mentions(&client, &mention).await?;
             ensure_no_raw_at_markup(&content_type, &content)?;
             let mut req = build_send_request(content, &content_type, adaptive_card.as_deref())?;
+            req.subject = subject;
             apply_mentions(&mut req, &identities)?;
 
             let msg = if let Some(chat_id) = chat {
@@ -367,33 +372,8 @@ pub async fn run(
             };
 
             if format == OutputFormat::Human {
-                let headers = vec!["ID", "From", "Body Preview", "Date"];
-                let rows: Vec<Vec<String>> = messages
-                    .iter()
-                    .map(|m| {
-                        let from = m
-                            .from
-                            .as_ref()
-                            .and_then(|f| f.user.as_ref())
-                            .and_then(|u| u.display_name.clone())
-                            .unwrap_or_default();
-                        let body_preview = m
-                            .body
-                            .as_ref()
-                            .and_then(|b| b.content.as_ref())
-                            .map(|c| {
-                                let clean: String = c.chars().take(60).collect();
-                                clean
-                            })
-                            .unwrap_or_default();
-                        vec![
-                            m.id.clone().unwrap_or_default(),
-                            from,
-                            body_preview,
-                            m.created_date_time.clone().unwrap_or_default(),
-                        ]
-                    })
-                    .collect();
+                let headers = vec!["ID", "From", "Subject", "Body Preview", "Date"];
+                let rows: Vec<Vec<String>> = messages.iter().map(message_list_row).collect();
                 output::table::print_table(headers, rows);
             } else {
                 output::print_success_list(format, &messages, start);
@@ -693,6 +673,26 @@ fn require_channel(team: Option<String>, channel: Option<String>) -> Result<(Str
     Ok((team_id, channel_id))
 }
 
+fn message_list_row(message: &ChatMessage) -> Vec<String> {
+    vec![
+        message.id.clone().unwrap_or_default(),
+        message
+            .from
+            .as_ref()
+            .and_then(|from| from.user.as_ref())
+            .and_then(|user| user.display_name.clone())
+            .unwrap_or_default(),
+        message.subject.clone().unwrap_or_default(),
+        message
+            .body
+            .as_ref()
+            .and_then(|body| body.content.as_ref())
+            .map(|content| content.chars().take(60).collect())
+            .unwrap_or_default(),
+        message.created_date_time.clone().unwrap_or_default(),
+    ]
+}
+
 fn resolve_body(body: Option<String>, stdin: bool) -> Result<String> {
     if stdin {
         let mut buf = String::new();
@@ -720,6 +720,7 @@ fn build_send_request(
     adaptive_card_path: Option<&str>,
 ) -> Result<SendMessageRequest> {
     let mut req = SendMessageRequest {
+        subject: None,
         body: ItemBody {
             content_type: Some(content_type.to_string()),
             content: Some(content),
@@ -931,6 +932,28 @@ fn escape_body_text(text: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn human_message_row_preserves_subject_and_body() {
+        let mut message: ChatMessage = serde_json::from_value(serde_json::json!({
+            "id": "message-id", "subject": "Release α & <plan>",
+            "from": {"user": {"displayName": "Example User"}},
+            "body": {"content": "Details"}, "createdDateTime": "2026-01-01T00:00:00Z"
+        }))
+        .unwrap();
+        assert_eq!(
+            message_list_row(&message),
+            [
+                "message-id",
+                "Example User",
+                "Release α & <plan>",
+                "Details",
+                "2026-01-01T00:00:00Z"
+            ]
+        );
+        message.subject = None;
+        assert_eq!(message_list_row(&message)[2], "");
+    }
+
     fn write_card(dir: &std::path::Path) -> String {
         let path = dir.join("card.json");
         std::fs::write(
@@ -1046,6 +1069,7 @@ mod tests {
 
     fn html_request(body: &str) -> SendMessageRequest {
         SendMessageRequest {
+            subject: None,
             body: ItemBody {
                 content_type: Some("html".into()),
                 content: Some(body.into()),
@@ -1145,6 +1169,7 @@ mod tests {
     #[test]
     fn text_body_is_promoted_to_html_with_line_breaks_intact() {
         let mut req = SendMessageRequest {
+            subject: None,
             body: ItemBody {
                 content_type: Some("text".into()),
                 content: Some("line one\nline <two> & three".into()),
@@ -1179,6 +1204,7 @@ mod tests {
     #[test]
     fn mention_alone_becomes_the_whole_body() {
         let mut req = SendMessageRequest {
+            subject: None,
             body: ItemBody {
                 content_type: Some("text".into()),
                 content: Some(String::new()),
@@ -1232,6 +1258,7 @@ mod tests {
     #[test]
     fn no_mentions_leaves_the_request_untouched() {
         let mut text_req = SendMessageRequest {
+            subject: None,
             body: ItemBody {
                 content_type: Some("text".into()),
                 content: Some("plain & simple\nbody".into()),
