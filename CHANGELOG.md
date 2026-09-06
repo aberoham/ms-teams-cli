@@ -9,6 +9,10 @@
 - `teams message reply --mention USER` (repeatable) tags a person in a threaded reply the same way `message send --mention` does, so a name in a reply notifies rather than merely appears.
 - `teams presence set-preferred --availability A [--expiration D]` and `teams presence clear-preferred` manage the user-preferred presence, the layer Microsoft Graph ranks above every presence session while one exists. The Teams client's "Appear offline" lives there as `Offline`/`OffWork`, and until now nothing in the CLI could reach it: `presence set` returned success and the account stayed offline. Each of the six availabilities Graph accepts here has exactly one activity, so the command derives it and reports both back. The expiration is checked as a positive ISO 8601 duration in whole day, hour, minute and second units but not bounded, because Graph documents defaults of one day for `Busy` and `DoNotDisturb` and seven days otherwise, rather than a range.
 
+### Changed
+
+- Refreshed two Rust dependencies: `uuid` 1.24.1 → 1.26.0 (the weekly rust-minor group) and `rand` 0.9.2 → 0.9.3, which clears RUSTSEC-2026-0097 (`rand::rng()` unsound with a custom logger; reached only through `reqwest`'s QUIC dependency) from `cargo audit`.
+
 ### Fixed
 
 - Windows builds reserve an 8 MiB main-thread stack, matching Linux and macOS. Windows gives the main thread 1 MiB by default, and building clap's command tree for this many subcommands needs almost all of it in an unoptimized build, so any addition to the `message` command made every debug and test invocation of `teams` on Windows — `--help` included — fail with `thread 'main' has overflowed its stack`, and `cargo test` failed on `windows-latest` while passing on Linux and macOS. A build script now passes `/STACK:8388608` to the MSVC linker (`--stack` on the GNU toolchain). The reservation is address space rather than committed memory, so an idle process costs nothing extra.
