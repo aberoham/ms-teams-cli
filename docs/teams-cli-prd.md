@@ -335,9 +335,10 @@ teams message send --chat <chat-id> --body "Hello"
 teams message send --team <team-id> --channel <channel-id> \
   --body "<h1>Title</h1><p>Content</p>" --content-type html
 
-# Send with @mention
+# Send with @mention (repeatable; user ID or UPN — the CLI builds the
+# required HTML body and mentions array, and resolves the display name)
 teams message send --team <team-id> --channel <channel-id> \
-  --body "Please review" --mention <user-id>
+  --body "Please review" --mention <user-id-or-upn>
 
 # Send with importance
 teams message send --chat <chat-id> --body "Urgent!" --importance urgent
@@ -438,6 +439,12 @@ teams presence get --users <id1>,<id2>,<id3>
 teams presence set --availability <Available|Busy|DoNotDisturb|Away|BeRightBack|Offline> \
   --activity <Available|InACall|InAMeeting|Presenting|...> \
   [--expiration <duration, e.g. 1h, 30m>]
+
+# Set or clear the preferred presence that overrides presence sessions
+teams presence set-preferred \
+  --availability <Available|Busy|DoNotDisturb|BeRightBack|Away|Offline> \
+  [--expiration <positive whole-unit ISO 8601 duration>]
+teams presence clear-preferred
 
 # Set status message
 teams presence status --message "In deep focus until 3pm" \

@@ -106,30 +106,59 @@ teams channel members remove TEAM_ID CHANNEL_ID MEMBER_ID
 ## Messages
 
 ```bash
-teams message send (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID) [--body TEXT | --stdin] [--content-type text|html] [--adaptive-card PATH] [--image PATH]... [--attach PATH]...
-teams message list (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID)
+teams message send (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID) [--body TEXT | --stdin] [--content-type text|html] [--adaptive-card PATH] [--image PATH]... [--attach PATH]... [--mention USER]... [--subject TEXT]
+teams message list (--team TEAM_ID --channel CHANNEL_ID [--message-id ROOT_MESSAGE_ID] | --chat CHAT_ID)
 teams message get --team TEAM_ID --channel CHANNEL_ID (MESSAGE_ID | --message MESSAGE_ID) [--with-attachments]
 teams message attachments list (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID)
 teams message attachments download (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) [--index N] [--dir DIR | --path FILE]
-teams message reply --team TEAM_ID --channel CHANNEL_ID --message-id MESSAGE_ID [--body TEXT | --stdin] [--content-type text|html] [--image PATH]... [--attach PATH]...
+teams message reply --team TEAM_ID --channel CHANNEL_ID --message-id MESSAGE_ID [--body TEXT | --stdin] [--content-type text|html] [--image PATH]... [--attach PATH]... [--mention USER]...
 teams message update (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) --body TEXT [--content-type text|html]
-teams message delete (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) --yes
-teams message undelete (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID)
+teams message delete --team TEAM_ID --channel CHANNEL_ID (MESSAGE_ID | --message MESSAGE_ID)
 teams message react (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID) --message-id MESSAGE_ID (REACTION | --reaction REACTION)
 teams message unreact (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID) --message-id MESSAGE_ID (REACTION | --reaction REACTION)
 teams message pin --team TEAM_ID --channel CHANNEL_ID (MESSAGE_ID | --message MESSAGE_ID)
 teams message unpin --team TEAM_ID --channel CHANNEL_ID (PINNED_MESSAGE_ID | --pinned-message-id PINNED_MESSAGE_ID)
 ```
 
+`--adaptive-card` may be used without `--body`: Graph requires the body to
+reference the card, and the CLI writes that reference itself. A card always
+sends an HTML body, so a `--content-type text` body is escaped when it is
+promoted.
+
+
 Normal message mutation requires delegated auth. App-only/client-credentials tokens are rejected for these commands.
+
+`message list --team TEAM_ID --channel CHANNEL_ID --message-id ROOT_MESSAGE_ID` lists the replies under that channel thread root. `--page-size` controls the first page and `--all-pages` follows the complete replies collection.
 
 `REACTION` is an emoji character or one of the names the CLI translates for you (`like`, `heart`, `laugh`, `surprised`, `sad`, `angry`, `thumbsup`, `thumbsdown`, `eyes`, `tada`, `rocket`, `fire`). Graph only accepts the emoji character on writes.
 
 `message update` edits your own message in place (Graph lets a delegated caller change any property except `policyViolation`); channel edits need the `ChannelMessage.ReadWrite` delegated scope, chat edits need `Chat.ReadWrite`. Graph returns no content on success, so the command reads the message back and prints it; if that read fails the edit has still been applied and the output is `{"id": ..., "updated": true, "readBackError": ...}`.
 
-`message delete` soft-deletes your own message through the Graph `softDelete` action (Graph does not support the DELETE verb on messages); `message undelete` reverses it with `undoSoftDelete`. Both are delegated-only. Chat targets need `Chat.ReadWrite`; channel posts and replies need the `ChannelMessage.ReadWrite` delegated scope, which the default login does not request. Deletion must be confirmed with `--yes`: without it the command exits with code 2 and sends nothing. Graph returns no content on success, and answers 204 again for a message that is already deleted, so each command reads the message back and prints it: a deleted message has `deletedDateTime` set and an empty body, a restored one has it cleared. If the read-back fails the change has still been applied and the output is `{"id": ..., "deleted": true, "readBackError": ...}` (or `"restored"`).
+`--image` sends a picture the way pasting a screenshot does — the bytes travel inside the message itself (a Graph "hosted content"), so it needs no scopes beyond sending messages. `--attach` uploads the file to real storage first (your OneDrive's `Microsoft Teams Chat Files` for chats, the team's SharePoint library for channels) and links it from the message; that upload needs `Files.ReadWrite` (chats) or `Files.ReadWrite.All` (channels). For chats, the CLI attempts to grant the other members read access with the drive item's `invite` action (no notification email). Recipient discovery also needs `User.Read` and a chat-member read scope such as `Chat.ReadBasic`. Object IDs are used only when the roster confirms the sender and recipient share a tenant; foreign or unknown tenants use email. Lookup failures, members without a usable address, and grant failures warn on stderr with manual-sharing guidance; lookup or sharing failures do not stop upload/send. Both flags repeat for multiple files, and `--body` becomes optional when either is present. Inline images are capped at 3MB each; attachments use Graph's 250MB simple-upload limit.
 
-`--image` sends a picture the way pasting a screenshot does — the bytes travel inside the message itself (a Graph "hosted content"), so it needs no scopes beyond sending messages. `--attach` uploads the file to real storage first (your OneDrive's `Microsoft Teams Chat Files` for chats, the team's SharePoint library for channels) and links it from the message; that upload needs `Files.ReadWrite` (chats) or `Files.ReadWrite.All` (channels). Both flags repeat for multiple files, and `--body` becomes optional when either is present. Inline images are capped at 3MB each; attachments use Graph's 250MB simple-upload limit.
+`--mention USER` tags a person as a real Teams @mention (the kind that pings them) in chat sends, channel sends, and channel replies. It is repeatable, and `USER` may be an Entra object ID or a UPN — the CLI resolves the display name through Microsoft Graph. A mention needs an HTML body plus a synchronized `mentions` array; the CLI builds both for you: a plain-text body is safely converted to HTML (escaped, line breaks preserved as `<br>`) and the `<at>` elements are prepended to your body in flag order. A mention by itself counts as a body, so `--mention USER` without `--body` works. Raw `<at>` markup typed directly into an HTML body is rejected with exit code 2 before anything is sent, because Graph does not turn it into a real mention.
+
+```bash
+# Tag someone in a chat
+teams message send --chat 19:abc@thread.v2 \
+  --mention sophie@example.com --body "Please review and send the drafts."
+
+# Tag two people in a channel post (repeat --mention)
+teams message send --team TEAM_ID --channel CHANNEL_ID \
+  --mention <object-id-1> --mention <object-id-2> --body "Deploy is going out now."
+
+# Tag someone in a channel reply
+teams message reply --team TEAM_ID --channel CHANNEL_ID --message-id ROOT_MESSAGE_ID \
+  --mention sophie@example.com --body "I have picked this up."
+```
+
+`--subject TEXT` sets the subject line on a channel root message — the bold title Teams renders above the body, the same field the client offers behind "Add a subject". Channel sends only: chat messages have no subject, so `--subject` with `--chat` (or without `--channel`) is rejected with exit code 2 before anything is sent. The stored subject comes back on `message list` and `message get`. Human lists include a Subject column. Plain lists collect columns across all messages, so a titled message keeps its subject even when the first message is untitled; missing values are blank. JSON omits absent subjects.
+
+```bash
+# Post a channel message with a subject line
+teams message send --team TEAM_ID --channel CHANNEL_ID \
+  --subject "Release plan" --body "Details inside."
+```
 
 `message attachments` unifies the two ways Teams stores message media: inline images pasted into the compose box (Graph "hosted contents") and files attached via SharePoint/OneDrive (`reference` attachments). `list` returns an indexed inventory; `download` fetches everything downloadable by default, or one item with `--index` (add `--path FILE` for an exact destination, or `--path -` to stream to stdout). Inline images and code snippets need no scopes beyond message reads; file attachments additionally require the `Files.Read.All` delegated scope. `message get --with-attachments` embeds the same inventory under `attachment_items` in the message output.
 
@@ -158,9 +187,11 @@ teams presence get
 teams presence get --user USER_ID
 teams presence get --users USER_ID,USER_ID
 teams presence get-batch --user-ids USER_ID,USER_ID
-teams presence set --availability AVAILABILITY --activity ACTIVITY [--expiration ISO8601_DURATION]
+teams presence set --availability AVAILABILITY --activity ACTIVITY [--expiration PT5M..PT4H]
+teams presence set-preferred --availability Available|Busy|DoNotDisturb|BeRightBack|Away|Offline [--expiration WHOLE_UNIT_ISO8601_DURATION]
 teams presence status --message TEXT [--expiry ISO8601_DATETIME]
 teams presence clear
+teams presence clear-preferred
 ```
 
 ## Search

@@ -2,34 +2,62 @@
 
 ## Unreleased
 
-## v0.5.0-alpha.1 - 2026-08-25
-
-First alpha from the `next` integration branch. Collects all ahead branches that have not yet landed upstream:
-
-- Presence writes: delegated Presence.ReadWrite scopes, application sessionId, clearPresence diagnostics, status message expiry shape (fix/presence-writes, fix/presence-status-expiry).
-- Windows credential chunking for tokens larger than 2560 bytes (fix/windows-credential-chunking).
-- `teams auth list` identity reporting per profile with decoded user, tenant, auth type and expiry (feat/auth-list-identities).
-- `teams message delete` via Graph softDelete and `teams message undelete` via undoSoftDelete with `--chat` and `--reply` support and `--yes` guard (feat/message-soft-delete).
-- Fork pipeline: Homebrew dispatch to `aberoham/homebrew-tap`, prerelease flag on GitHub Releases, Scoop gated, auto-tag limited to upstream.
-
-Version is `0.5.0-alpha.1` so that it sorts before the next upstream stable `0.5.0`. Install from the fork with `brew tap aberoham/tap && brew install aberoham/tap/teams-cli` or from the prerelease tarballs on the GitHub Releases page.
+## v0.7.0 - 2026-09-06
 
 ### Added
 
-- `teams auth list` reports, for each profile, the signed-in `user`, `tenant_id`, and `auth_type` (`delegated`, `app-only`, or `unknown`) decoded from the stored token's claims, plus the stored token's `expires_at`, without any network call. A profile whose token cannot be read or decoded is still listed with those fields `null`. This resolves #54.
-- `teams message undelete` restores a message removed with `message delete`, through the Graph `undoSoftDelete` action.
-- `message list` and `message get` include `deletedDateTime` on soft-deleted messages.
+- `teams message send --subject TEXT` sets the subject line on a channel root message — the bold title Teams renders above the body, the same field the client offers behind "Add a subject". Channel sends only: chat messages have no subject, so `--subject` with `--chat` (or without `--channel`) is rejected as invalid input before anything is sent.
+- `teams message list --team T --channel C --message-id ROOT` lists the replies under one channel thread root, paged like any other listing. Without it a caller could not tell from the existing channel-list output whether a question had already been answered, because that listing returns thread roots only.
+- `teams message reply --mention USER` (repeatable) tags a person in a threaded reply the same way `message send --mention` does, so a name in a reply notifies rather than merely appears.
+- `teams presence set-preferred --availability A [--expiration D]` and `teams presence clear-preferred` manage the user-preferred presence, the layer Microsoft Graph ranks above every presence session while one exists. The Teams client's "Appear offline" lives there as `Offline`/`OffWork`, and until now nothing in the CLI could reach it: `presence set` returned success and the account stayed offline. Each of the six availabilities Graph accepts here has exactly one activity, so the command derives it and reports both back. The expiration is checked as a positive ISO 8601 duration in whole day, hour, minute and second units but not bounded, because Graph documents defaults of one day for `Busy` and `DoNotDisturb` and seven days otherwise, rather than a range.
 
 ### Changed
 
-- `teams message delete` now calls the Graph `softDelete` action and accepts `--chat <chat-id>` as well as the `--team`/`--channel` pair, plus `--reply <reply-id>` for channel thread replies. Deletion must be confirmed with `--yes`; without it the command exits with code 2 and sends nothing. On success the message is read back so the output shows `deletedDateTime`.
+- Refreshed two Rust dependencies: `uuid` 1.24.1 → 1.26.0 (the weekly rust-minor group) and `rand` 0.9.2 → 0.9.3, which clears RUSTSEC-2026-0097 (`rand::rng()` unsound with a custom logger; reached only through `reqwest`'s QUIC dependency) from `cargo audit`.
 
 ### Fixed
 
-- `teams message delete` previously sent the DELETE verb, which Microsoft Graph rejects for messages ("Requested API is not supported"), so the command could never delete anything.
+- Windows builds reserve an 8 MiB main-thread stack, matching Linux and macOS. Windows gives the main thread 1 MiB by default, and building clap's command tree for this many subcommands needs almost all of it in an unoptimized build, so any addition to the `message` command made every debug and test invocation of `teams` on Windows — `--help` included — fail with `thread 'main' has overflowed its stack`, and `cargo test` failed on `windows-latest` while passing on Linux and macOS. A build script now passes `/STACK:8388608` to the MSVC linker (`--stack` on the GNU toolchain). The reservation is address space rather than committed memory, so an idle process costs nothing extra.
+- Plain lists retain optional fields that first appear after the first row, including message subjects. Human message lists include a Subject column; JSON still omits absent subjects.
+- `message list` and `message get` no longer drop the `subject` of a message. The `ChatMessage` model had no `subject` field, so a channel root message's subject — returned by Graph on both reads — silently vanished from every output: a message posted with a subject read back without one. Messages without a subject are unchanged and gain no `"subject": null` noise.
+- `teams message send --chat … --attach FILE` now shares each uploaded file with the chat's other members. The upload lands in the sender's OneDrive (`Microsoft Teams Chat Files`), where nobody else has access; the Teams client grants every member read permission when it attaches a file, but the CLI did not, so recipients got "you don't have permission" when they opened the attachment. After each upload the CLI now grants the members read access through the drive item's `invite` action, with no notification email. A member is addressed by Entra object ID only when the roster shows the same tenant as the sender — Graph documents that a chat's membership can span tenants, and an object ID means nothing outside its own directory — and by email otherwise; the sender is skipped. Every step is best-effort: a failed member lookup, a member with no usable address, or a refused grant warns on stderr and says to share the file from OneDrive by hand, and the upload and the message still go through. Channel attachments are unchanged: they live in the team's SharePoint library, which channel members already read.
+
+## v0.6.0 - 2026-08-30
+
+### Added
+
+- `teams --help-json` emits the whole command tree as JSON: every command's path, summary, usage, and command-specific flags with their value names, defaults, environment variables, and whether they are required. This is what the documentation site consumes to regenerate its command reference on each release. Global options and clap's synthesised `help` subcommands are excluded, since the reference documents globals once and the `help` entries are not part of the command surface.
+
+### Fixed
+
+- The documentation site's command reference can regenerate again. Its workflow has always called `teams --help-json`, which did not exist, so every scheduled run since at least 2026-07-06 failed and `reference/command/**` stayed frozen at v0.3.0. A release now also notifies the docs repository, which previously received no `cli-released` event at all, so the reference and the site's version badge both refresh on release.
+
+## v0.5.0 - 2026-08-30
+
+### Added
+
+- `teams message send --mention USER` (repeatable) tags a person with a real Teams @mention, in chats and channels. Graph only keeps a mention when the body's `<at id="N">` elements are synchronized with a top-level `mentions` array, so the CLI builds both: each value (Entra object ID or UPN) is resolved through Graph, display names are HTML-escaped into the `<at>` prefix in flag order, duplicates collapse to one mention, and a plain-text body is promoted to HTML safely. A mention on its own counts as a body. Raw `<at>` markup in an HTML body without `--mention` is rejected before anything is sent, and `message list`/`get` retain any mentions Graph returns.
+- `presence get` output now includes `statusMessage.publishedDateTime`, a documented Graph property that was previously discarded during deserialization.
+- `teams auth list` reports, for each profile, the signed-in `user`, `tenant_id`, and `auth_type` (`delegated`, `app-only`, or `unknown`) decoded from the stored token's claims, plus the stored token's `expires_at`, without any network call. A profile whose token cannot be read or decoded is still listed with those fields `null`. This resolves #54.
+
+### Changed
+
+- Refreshed the Rust dependencies: the rust-minor group (clap, clap_complete and others), `base64` 0.22 → 0.23, `toml` 0.8 → 1.1, and `comfy-table` 7.2 → 8.0. comfy-table 8 turns the presets into `TableStyle` constants and replaces `Table::load_preset` with `Table::load_style`; table rendering is unchanged.
+- `teams auth list` now emits `profiles` as an array of objects rather than an array of profile-name strings. A consumer reading `.data.profiles[]` as a string needs `.data.profiles[].name` instead. On a terminal the command prints a table, with the active profile marked `*`, in place of the raw JSON it used to show.
+- `teams presence set --expiration` is now checked before the request is sent. Microsoft Graph accepts an ISO 8601 duration from `PT5M` to `PT4H`; a malformed or out-of-range value now fails as invalid input (exit 2) with the bounds in the message, instead of costing a round trip and returning a 400 to interpret. The `--availability` and `--activity` help text now names the five pairs `setPresence` actually accepts, rather than `Offline` and `InAMeeting`, which only occur when reading a presence. This resolves #81.
+
+### Fixed
+
+- User lookups now percent-encode the identifier, so a guest UPN containing `#` (`name_domain#EXT#@tenant.onmicrosoft.com`) is no longer truncated at the `#` and read as a URL fragment.
+- `teams message send --adaptive-card` now works. Microsoft Graph requires the message body to reference each attachment by id, and the id was generated inside the send path and never written into the body, so every card was rejected with `400 BadRequest: Body does not contain marker for attachment with Id ...` — and because the id never left the function, a caller could not add the marker themselves. The body now carries the marker, and is promoted to HTML the same way the `--attach` path does, escaping a plain-text body rather than concatenating markup onto it. `--adaptive-card` no longer requires `--body`, since the body only has to carry the marker. This resolves #85.
+- A `PERMISSION_DENIED` now names the permissions the token carries. Microsoft Graph refuses an under-permissioned request with 403 and, in the case that prompted this, an empty `message`, so the failure said nothing about what was missing and was indistinguishable from a genuine authorization refusal. A 403 now lists the token's delegated scopes, or its application roles when it is app-only, and points at `teams auth doctor` and `teams auth login` — or, for an application role, at the administrator who must grant it, since logging in again cannot add one. An opaque token yields no claims and gets no hint. This resolves #80.
+- A response the CLI cannot deserialize now reports what serde objected to. `Failed to parse API response: error decoding response body` named neither the offending value nor where it sat, because `reqwest::Error` keeps serde's account one level down its source chain and `Display` never reaches it; the message now reads `... error decoding response body: invalid type: map, expected a string at line 1 column 66`. This covers every Graph response the CLI deserializes and all five token-exchange paths across the three login flows. This resolves #79.
+- `teams presence set`, `presence status` and `presence clear` now work with a default delegated login. All three Graph calls require `Presence.ReadWrite`, which the built-in scope set did not request, so every presence write returned 403. Microsoft does not mark that delegated scope admin-consent required, so it joins the defaults. An existing session keeps the scopes it was granted — run `teams auth login` again to consent to the new one. This resolves #70.
+- `teams presence clear` no longer fails with `The SessionId field is required`, and `presence set` no longer opens a presence session under a fresh random UUID that nothing could later clear. Graph keys a presence session to the application that owns it, so both commands now send that application's ID as `sessionId` — a configured `client_id` when there is one, otherwise the `azp`/`appid` claim of the token itself — and report it back. Graph's 404 for "no such session" is reported as `no_presence_session` rather than an error, so a second clear or a retry after a lost response succeeds. This resolves #71.
+- The presence write commands now reject an app-only token locally, as the message write commands already did, instead of sending a request that cannot succeed against `/me`.
+- `teams presence get` no longer fails with `API error (200): Failed to parse API response` when the target's Teams status message carries an expiry. Microsoft Graph sends `statusMessage.expiryDateTime` as a `dateTimeTimeZone` object, not a string, so both `GET /me/presence` and `GET /users/{id}/presence` failed to deserialize for any account with an expiring status message. This resolves #69.
 - On Windows, `teams auth login` no longer fails with `KEYRING_ERROR: ... longer than platform limit of 2560 chars` after a successful sign-in. Credential Manager caps a credential at 2560 bytes and a Microsoft Graph token bundle is routinely larger, so the serialized token is now split across `<profile>:token:<n>` entries with a `<profile>:token` header; `auth logout` removes every piece. macOS and Linux keep a single keychain item as before. This resolves #67.
 - `teams auth logout` now reports a failure to delete the stored token instead of silently succeeding and leaving it in the keyring. A profile with no stored token still logs out cleanly.
-
 ## v0.4.0 - 2026-08-19
 
 ### Added

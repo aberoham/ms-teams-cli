@@ -471,6 +471,7 @@ mod tests {
             display_name: Some("Jane von Smith".into()),
             roles: None,
             user_id: Some("u1".into()),
+            tenant_id: None,
             email: Some("JSmith@example.com".into()),
         };
         assert_eq!(
@@ -590,7 +591,8 @@ mod tests {
     async fn upn_miss_falls_through_to_people_search() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/users/ghost@example.com"))
+            // The lookup URL percent-encodes the query, so `@` arrives as %40.
+            .and(path("/users/ghost%40example.com"))
             .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
             .mount(&server)
             .await;
@@ -627,7 +629,8 @@ mod tests {
             .mount(&server)
             .await;
         Mock::given(method("GET"))
-            .and(path("/users/ghostw@example.com"))
+            // Encoded, as the exact-lookup URL builds it.
+            .and(path("/users/ghostw%40example.com"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "user-1",
                 "displayName": "Ghost Writer",

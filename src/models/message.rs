@@ -8,9 +8,8 @@ pub struct ChatMessage {
     pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_date_time: Option<String>,
-    /// Set once the message has been soft-deleted; Graph also blanks the body.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub deleted_date_time: Option<String>,
+    pub subject: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from: Option<ChatMessageFrom>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -21,6 +20,8 @@ pub struct ChatMessage {
     pub message_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reactions: Option<Vec<ChatMessageReaction>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<Vec<ChatMessageMention>>,
 }
 
 /// A reaction on a message. `reaction_type` is the unicode character (or a
@@ -57,7 +58,9 @@ pub struct ChatMessageFrom {
     pub user: Option<ChatMessageUser>,
 }
 
-/// User identity within a message.
+/// User identity within a message. `user_identity_type` is Graph's
+/// `userIdentityType` (for example `aadUser`); it appears on mention
+/// identities and is retained so read-backs keep the full identity shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMessageUser {
@@ -65,17 +68,42 @@ pub struct ChatMessageUser {
     pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_identity_type: Option<String>,
+}
+
+/// A Teams @mention: the numeric `id` must match an `<at id="N">` element in
+/// the message body for Teams to render it as a real mention.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessageMention {
+    pub id: i32,
+    pub mention_text: String,
+    pub mentioned: ChatMessageMentioned,
+}
+
+/// Who a [`ChatMessageMention`] refers to. Only the `user` form is produced
+/// or consumed by this CLI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessageMentioned {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<ChatMessageUser>,
 }
 
 /// Request body for sending a message.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendMessageRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
     pub body: ItemBody,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<ChatMessageAttachment>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hosted_contents: Option<Vec<HostedContentUpload>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<Vec<ChatMessageMention>>,
 }
 
 /// Write-side hosted content: inline image bytes riding a message create
@@ -160,11 +188,12 @@ mod tests {
         let msg = ChatMessage {
             id: Some("msg1".into()),
             created_date_time: Some("2024-01-01T00:00:00Z".into()),
-            deleted_date_time: None,
+            subject: None,
             from: Some(ChatMessageFrom {
                 user: Some(ChatMessageUser {
                     id: Some("u1".into()),
                     display_name: Some("Alice".into()),
+                    user_identity_type: None,
                 }),
             }),
             body: Some(ItemBody {
@@ -174,6 +203,7 @@ mod tests {
             attachments: None,
             message_type: Some("message".into()),
             reactions: None,
+            mentions: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: ChatMessage = serde_json::from_str(&json).unwrap();
@@ -183,6 +213,7 @@ mod tests {
     #[test]
     fn send_request_serializes_hosted_contents_with_temporary_id() {
         let req = SendMessageRequest {
+            subject: None,
             body: ItemBody {
                 content_type: Some("html".into()),
                 content: Some(r#"<p><img src="../hostedContents/1/$value"></p>"#.into()),
@@ -193,6 +224,7 @@ mod tests {
                 content_bytes: "aVZCT1J3".into(),
                 content_type: "image/png".into(),
             }]),
+            mentions: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         let hc = &json["hostedContents"][0];
@@ -200,6 +232,149 @@ mod tests {
         assert_eq!(hc["contentBytes"], "aVZCT1J3");
         assert_eq!(hc["contentType"], "image/png");
         assert!(json.get("attachments").is_none());
+    }
+
+    /// The wire shape Microsoft's v1.0 `chatMessageMention` contract expects;
+    /// any deviation here and Graph strips the mention.
+    #[test]
+    fn send_request_serializes_the_exact_mention_shape() {
+        let req = SendMessageRequest {
+            subject: None,
+            body: ItemBody {
+                content_type: Some("html".into()),
+                content: Some(r#"<at id="0">Sophie Daniels</at> Please review"#.into()),
+            },
+            attachments: None,
+            hosted_contents: None,
+            mentions: Some(vec![ChatMessageMention {
+                id: 0,
+                mention_text: "Sophie Daniels".into(),
+                mentioned: ChatMessageMentioned {
+                    user: Some(ChatMessageUser {
+                        id: Some("32cbca05-dc05-454f-b0f3-072f331d4c97".into()),
+                        display_name: Some("Sophie Daniels".into()),
+                        user_identity_type: Some("aadUser".into()),
+                    }),
+                },
+            }]),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "body": {
+                    "contentType": "html",
+                    "content": "<at id=\"0\">Sophie Daniels</at> Please review"
+                },
+                "mentions": [
+                    {
+                        "id": 0,
+                        "mentionText": "Sophie Daniels",
+                        "mentioned": {
+                            "user": {
+                                "id": "32cbca05-dc05-454f-b0f3-072f331d4c97",
+                                "displayName": "Sophie Daniels",
+                                "userIdentityType": "aadUser"
+                            }
+                        }
+                    }
+                ]
+            })
+        );
+    }
+
+    /// Mentions Graph returns on reads must survive a parse/print round trip
+    /// instead of disappearing from JSON output.
+    #[test]
+    fn chat_message_roundtrips_returned_mentions() {
+        let json = serde_json::json!({
+            "id": "1700000000000",
+            "body": {
+                "contentType": "html",
+                "content": "<at id=\"0\">Sophie Daniels</at> Please review"
+            },
+            "mentions": [
+                {
+                    "id": 0,
+                    "mentionText": "Sophie Daniels",
+                    "mentioned": {
+                        "user": {
+                            "id": "32cbca05-dc05-454f-b0f3-072f331d4c97",
+                            "displayName": "Sophie Daniels",
+                            "userIdentityType": "aadUser"
+                        }
+                    }
+                }
+            ]
+        });
+        let msg: ChatMessage = serde_json::from_value(json).unwrap();
+        let mentions = msg.mentions.as_ref().unwrap();
+        assert_eq!(mentions.len(), 1);
+        assert_eq!(mentions[0].id, 0);
+        assert_eq!(mentions[0].mention_text, "Sophie Daniels");
+        let user = mentions[0].mentioned.user.as_ref().unwrap();
+        assert_eq!(
+            user.id.as_deref(),
+            Some("32cbca05-dc05-454f-b0f3-072f331d4c97")
+        );
+        assert_eq!(user.display_name.as_deref(), Some("Sophie Daniels"));
+        assert_eq!(user.user_identity_type.as_deref(), Some("aadUser"));
+
+        let re = serde_json::to_value(&msg).unwrap();
+        assert_eq!(re["mentions"][0]["id"], 0);
+        assert_eq!(re["mentions"][0]["mentionText"], "Sophie Daniels");
+        assert_eq!(
+            re["mentions"][0]["mentioned"]["user"]["userIdentityType"],
+            "aadUser"
+        );
+    }
+
+    /// Graph returns `subject` on channel root messages; it must survive a
+    /// parse/print round trip instead of being dropped from JSON output.
+    #[test]
+    fn chat_message_keeps_returned_subject() {
+        let json = serde_json::json!({
+            "id": "1700000000000",
+            "subject": "Release plan",
+            "body": { "contentType": "html", "content": "Team, details inside." }
+        });
+        let msg: ChatMessage = serde_json::from_value(json).unwrap();
+        assert_eq!(msg.subject.as_deref(), Some("Release plan"));
+
+        let re = serde_json::to_value(&msg).unwrap();
+        assert_eq!(re["subject"], "Release plan");
+    }
+
+    /// Messages without a subject (every chat message, most replies) must not
+    /// gain a `"subject": null` field on output.
+    #[test]
+    fn chat_message_without_subject_omits_the_field() {
+        let json = serde_json::json!({
+            "id": "1700000000001",
+            "body": { "contentType": "text", "content": "hi" }
+        });
+        let msg: ChatMessage = serde_json::from_value(json).unwrap();
+        assert!(msg.subject.is_none());
+
+        let re = serde_json::to_value(&msg).unwrap();
+        assert!(re.get("subject").is_none());
+    }
+
+    #[test]
+    fn send_request_serializes_subject_at_top_level() {
+        let req = SendMessageRequest {
+            subject: Some("Release plan".into()),
+            body: ItemBody {
+                content_type: Some("text".into()),
+                content: Some("Team, details inside.".into()),
+            },
+            attachments: None,
+            hosted_contents: None,
+            mentions: None,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["subject"], "Release plan");
+        assert_eq!(json["body"]["content"], "Team, details inside.");
     }
 
     #[test]

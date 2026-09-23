@@ -27,6 +27,106 @@ fn teams() -> Command {
     Command::from_std(teams_process())
 }
 
+/// The expiration check is a clap `value_parser`, so it has to reject the value before anything
+/// resolves a token or opens a connection. Testing the parser alone would not notice the
+/// attribute being dropped.
+#[test]
+fn presence_set_rejects_a_bad_expiration_before_it_needs_credentials() {
+    teams()
+        .args([
+            "presence",
+            "set",
+            "--availability",
+            "Available",
+            "--activity",
+            "Available",
+            "--expiration",
+            "1h",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("is not an ISO 8601 duration"));
+
+    teams()
+        .args([
+            "presence",
+            "set",
+            "--availability",
+            "Available",
+            "--activity",
+            "Available",
+            "--expiration",
+            "PT10H",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("PT5M to PT4H"));
+}
+
+/// The activity is derived from the availability, so the only way to send a pair Graph rejects
+/// is for the value parser to be dropped from the attribute; the checks below would notice.
+#[test]
+fn presence_set_preferred_rejects_bad_values_before_it_needs_credentials() {
+    teams()
+        .args(["presence", "set-preferred", "--availability", "InACall"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "Available, Busy, DoNotDisturb, BeRightBack, Away, Offline",
+        ));
+
+    teams()
+        .args([
+            "presence",
+            "set-preferred",
+            "--availability",
+            "Away",
+            "--expiration",
+            "8h",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("is not an ISO 8601 duration"));
+
+    teams()
+        .args([
+            "presence",
+            "set-preferred",
+            "--availability",
+            "Away",
+            "--expiration",
+            "P1DT",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("is not an ISO 8601 duration"));
+}
+
+#[test]
+fn preferred_presence_writes_reject_app_only_auth_before_graph() {
+    let payload = serde_json::json!({ "roles": ["Presence.ReadWrite.All"] });
+    let token = format!(
+        "header.{}.signature",
+        URL_SAFE_NO_PAD.encode(payload.to_string())
+    );
+
+    for args in [
+        vec!["presence", "set-preferred", "--availability", "Away"],
+        vec!["presence", "clear-preferred"],
+    ] {
+        teams()
+            .args(args)
+            .env("TEAMS_CLI_ACCESS_TOKEN", &token)
+            .assert()
+            .code(4)
+            .stdout(
+                predicate::str::contains("\"code\": \"PERMISSION_DENIED\"").and(
+                    predicate::str::contains("requires delegated Microsoft Graph auth"),
+                ),
+            );
+    }
+}
+
 #[test]
 fn help_flag_works() {
     teams().arg("--help").assert().success().stdout(
@@ -539,93 +639,153 @@ fn message_help_shows_subcommands() {
                 .and(predicate::str::contains("reply"))
                 .and(predicate::str::contains("react"))
                 .and(predicate::str::contains("pin"))
-                .and(predicate::str::contains("delete"))
-                .and(predicate::str::contains("undelete")),
+                .and(predicate::str::contains("delete")),
         );
 }
 
 #[test]
-fn message_delete_and_undelete_accept_chat_and_reply_targets() {
-    for sub in ["delete", "undelete"] {
-        teams()
-            .args(["message", sub, "--help"])
-            .assert()
-            .success()
-            .stdout(
-                predicate::str::contains("--chat <CHAT>")
-                    .and(predicate::str::contains("--reply <REPLY>"))
-                    .and(predicate::str::contains("--message <MESSAGE>")),
-            );
-    }
+fn message_send_help_advertises_repeatable_mention_flag() {
+    teams()
+        .args(["message", "send", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--mention <USER>"));
 }
 
-/// Deletion must be confirmed explicitly. Without `--yes` the command is
-/// refused before any token is resolved or request is sent, so the exit code
-/// is 2 (not the auth error a bare environment would otherwise produce) and
-/// the refusal arrives in the normal error envelope.
 #[test]
-fn message_delete_requires_yes() {
+fn message_send_help_advertises_subject_flag() {
+    teams()
+        .args(["message", "send", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--subject <SUBJECT>"));
+}
+
+#[test]
+fn help_json_includes_message_subject_flag() {
+    let result = teams().arg("--help-json").assert().success();
+    let help: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    let message = help["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|command| command["name"] == "message")
+        .unwrap();
+    let send = message["subcommands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|command| command["name"] == "send")
+        .unwrap();
+    assert!(send["flags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|flag| flag["name"] == "--subject"));
+}
+
+#[test]
+fn message_send_rejects_subject_on_chat_messages() {
     teams()
         .args([
             "message",
-            "delete",
+            "send",
+            "--chat",
+            "19:chat@thread.v2",
+            "--subject",
+            "Release plan",
+            "--body",
+            "hi",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--subject"));
+}
+
+#[test]
+fn message_send_rejects_subject_without_a_channel() {
+    teams()
+        .args([
+            "message",
+            "send",
+            "--subject",
+            "Release plan",
+            "--body",
+            "hi",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--subject"));
+}
+
+#[test]
+fn message_reply_help_advertises_repeatable_mention_flag() {
+    teams()
+        .args(["message", "reply", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--mention <USER>"));
+}
+
+#[test]
+fn message_list_help_advertises_thread_replies_flag() {
+    teams()
+        .args(["message", "list", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--message-id <MESSAGE_ID>"));
+}
+
+#[test]
+fn message_list_message_id_requires_channel() {
+    teams()
+        .args([
+            "message",
+            "list",
+            "--team",
+            "team-id",
+            "--message-id",
+            "1234",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--channel"));
+}
+
+#[test]
+fn message_list_rejects_message_id_with_chat() {
+    teams()
+        .args([
+            "message",
+            "list",
             "--chat",
             "19:abc@thread.v2",
-            "1700000000000",
+            "--channel",
+            "channel-id",
+            "--message-id",
+            "1234",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn documented_chat_attachment_command_parses_before_authentication() {
+    teams()
+        .args([
+            "message",
+            "send",
+            "--chat",
+            "chat-id",
+            "--attach",
+            "example.txt",
             "--output",
             "json",
         ])
         .assert()
-        .code(2)
-        .stdout(
-            predicate::str::contains("\"success\": false")
-                .and(predicate::str::contains("INVALID_INPUT"))
-                .and(predicate::str::contains("--yes")),
-        );
-
-    teams()
-        .args([
-            "message",
-            "delete",
-            "--chat",
-            "19:abc@thread.v2",
-            "1700000000000",
-            "--output",
-            "human",
-        ])
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("--yes"));
-}
-
-#[test]
-fn message_delete_rejects_incomplete_or_mixed_targets() {
-    teams()
-        .args(["message", "delete", "--team", "team-id", "1", "--yes"])
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("--channel"));
-
-    teams()
-        .args([
-            "message",
-            "delete",
-            "--chat",
-            "19:abc@thread.v2",
-            "--reply",
-            "2",
-            "1",
-            "--yes",
-        ])
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("cannot be used with"));
-
-    teams()
-        .args(["message", "undelete", "--channel", "channel-id", "1"])
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("--team"));
+        .code(3)
+        .stdout(predicate::str::contains("auth login"));
 }
 
 #[test]
@@ -757,7 +917,9 @@ fn presence_help_shows_subcommands() {
         .stdout(
             predicate::str::contains("get")
                 .and(predicate::str::contains("set"))
+                .and(predicate::str::contains("set-preferred"))
                 .and(predicate::str::contains("clear"))
+                .and(predicate::str::contains("clear-preferred"))
                 .and(predicate::str::contains("status")),
         );
 }

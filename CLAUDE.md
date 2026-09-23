@@ -26,7 +26,7 @@ Single-crate Rust binary. Key modules:
   - `channel.rs` — list, get, create, update, delete, members
   - `message.rs` — send, list, get, reply, delete, react, unreact, pin, unpin
   - `chat.rs` — list, get, create, hide, unhide, members
-  - `presence.rs` — get, set, clear, status, get-batch
+  - `presence.rs` — get, set, set-preferred, clear, clear-preferred, status, get-batch
   - `search.rs` — messages, users, teams
   - `tag.rs` — list, get, create, delete, add-member, remove-member
   - `meeting.rs` — list, get, create, delete, join-url, attendance
@@ -62,6 +62,7 @@ Single-crate Rust binary. Key modules:
 ### Output Contract
 All commands emit a JSON envelope: `{ "success": bool, "data": ..., "metadata": { "request_id", "timestamp", "duration_ms" } }`.
 When stdout is a TTY, defaults to human-readable table format. When piped, defaults to JSON.
+Plain list columns include keys from every row, with blank cells for absent values. Human message lists include a Subject column; absent message subjects remain omitted in JSON.
 
 ### Exit Codes
 0=success, 1=general, 2=invalid input, 3=auth, 4=permission denied, 5=not found, 6=rate limited, 7=network, 8=server error, 10=config error
@@ -76,6 +77,7 @@ CLI flags > env vars (TEAMS_CLI_CLIENT_ID, TEAMS_CLI_CLIENT_SECRET, TEAMS_CLI_TE
 - Profile index tracked in keyring for `auth list`
 
 ### Graph API Client
+- Chat attachment sharing is best-effort, including recipient lookup failures. Use object IDs only for recipients whose roster tenant matches the sender's; otherwise use email or warn about manual sharing.
 - Automatic retry with exponential backoff on 429/5xx
 - Respects `Retry-After` header for rate limiting
 - Pagination via `@odata.nextLink` with `--all-pages` flag

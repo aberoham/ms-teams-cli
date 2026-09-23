@@ -376,22 +376,65 @@ teams channel members remove <team-id> <channel-id> <member-id>
 teams message send --team <team-id> --channel <channel-id> --body "Hello"
 teams message send --chat <chat-id> --body "Hello"
 teams message send --team <team-id> --channel <channel-id> --body "<h1>Rich</h1>" --content-type html
+teams message send --chat <chat-id> --mention <user-id-or-upn> --body "Please review and send the drafts."
+teams message send --team <team-id> --channel <channel-id> --mention <user-id> --mention <user-id> --body "Deploy is going out now."
+teams message send --team <team-id> --channel <channel-id> --subject "Release plan" --body "Details inside."
 echo "Build passed" | teams message send --team <team-id> --channel <channel-id> --stdin
 teams message list --team <team-id> --channel <channel-id>
+teams message list --team <team-id> --channel <channel-id> --message-id <root-message-id> --all-pages
 teams message list --chat <chat-id>
 teams message get --team <team-id> --channel <channel-id> --message <msg-id>
-teams message reply --team <team-id> --channel <channel-id> --message <msg-id> --body "Thanks!"
+teams message reply --team <team-id> --channel <channel-id> --message <msg-id> --mention <user-id-or-upn> --body "Thanks!"
 teams message update --team <team-id> --channel <channel-id> --message <msg-id> --body "Corrected"
 teams message update --chat <chat-id> --message <msg-id> --body "Corrected"
-teams message delete --chat <chat-id> --message <msg-id> --yes
-teams message delete --team <team-id> --channel <channel-id> --message <msg-id> --yes
-teams message undelete --chat <chat-id> --message <msg-id>
+teams message delete --team <team-id> --channel <channel-id> --message <msg-id>
 teams message react --team <team-id> --channel <channel-id> --message <msg-id> --reaction like
 teams message unreact --team <team-id> --channel <channel-id> --message <msg-id> --reaction like
 teams message react --chat <chat-id> --message <msg-id> --reaction eyes
 teams message unreact --chat <chat-id> --message <msg-id> --reaction 👀
 teams message pin --team <team-id> --channel <channel-id> --message <msg-id>
 teams message unpin --team <team-id> --channel <channel-id> --pinned-message-id <id>
+```
+
+`message list --message-id ROOT_MESSAGE_ID` lists the replies under that channel thread root. The global `--page-size` and `--all-pages` options apply to the replies collection.
+
+`message send --chat CHAT_ID --attach FILE` uploads to your OneDrive and attempts
+to share the file with the chat's other members without notification email.
+Discovery needs `User.Read` and a chat-member read scope such as `Chat.ReadBasic`;
+upload and sharing need `Files.ReadWrite`. Object IDs are used only for a tenant
+confirmed to match the sender's; other recipients use email. Lookup or sharing
+failures warn on stderr and allow upload/send to continue. Members without a
+usable address are reported for manual sharing from OneDrive.
+
+The `--mention USER` flag on `message send` and `message reply` tags a person as a real Teams @mention — the kind that pings
+them, not literal `@Name` text. The flag is repeatable and `USER` may be an Entra object ID
+or UPN; the display name is resolved through Microsoft Graph. It works for chat sends,
+channel sends, and channel replies. Graph requires an HTML body plus a synchronized
+`mentions` array, so the CLI builds both: a plain-text body is safely converted to HTML (escaped, line breaks
+preserved), the `<at>` elements are prepended in flag order, and a mention by itself counts
+as a body (`--body` optional). Raw `<at>` markup typed into an HTML body is rejected with
+exit code 2 before anything is sent.
+
+`message send --subject TEXT` sets the subject line on a channel root message — the bold
+title Teams shows above the body, the same field the Teams client offers behind "Add a
+subject". Channel messages only: chat messages have no subject, so `--subject` with
+`--chat` is rejected as invalid input. `message list` and `message get` return the
+subject Graph stores, so a posted subject survives a read-back. Human message lists
+include a Subject column; plain lists include subjects even when the first message
+is untitled. JSON continues to omit the subject field when it is absent.
+
+```bash
+teams message send --chat <chat-id> \
+  --mention sophie@example.com \
+  --body "Please review and send the drafts." --output json
+
+teams message send --team <team-id> --channel <channel-id> \
+  --mention <user-id-1> --mention <user-id-2> \
+  --body "Deploy is going out now."
+
+teams message reply --team <team-id> --channel <channel-id> \
+  --message-id <root-message-id> --mention sophie@example.com \
+  --body "I have picked this up."
 ```
 
 Reactions accept either a channel (`--team` with `--channel`) or a chat (`--chat`), never both.
@@ -423,7 +466,11 @@ teams presence get                      # Your own presence
 teams presence get --user-id <user-id>  # Another user's presence
 teams presence get-batch --user-ids <id1>,<id2>
 teams presence set --availability Available --activity Available
+teams presence set --availability Busy --activity InACall --expiration PT1H
 teams presence clear
+teams presence set-preferred --availability Offline     # "Appear offline"
+teams presence set-preferred --availability Busy --expiration PT8H
+teams presence clear-preferred
 teams presence status --message "In deep focus" [--expiry <datetime>]
 ```
 
@@ -435,6 +482,28 @@ succeeds either way and reports what Graph answered: `presence_cleared` when it
 closed a session, `no_presence_session` when it knew of none under that ID —
 which is also what a retry sees when the attempt before it succeeded but its
 response was lost.
+
+Graph accepts five `--availability`/`--activity` pairs: `Available`/`Available`,
+`Busy`/`InACall`, `Busy`/`InAConferenceCall`, `Away`/`Away` and
+`DoNotDisturb`/`Presenting`. `--expiration` takes an ISO 8601 duration between
+`PT5M` and `PT4H` and is checked before the request is sent; leaving it out
+applies Graph's own five-minute default, so a presence set this way lapses on
+its own either way.
+
+A preferred presence is a second layer above the sessions. Graph ranks it over
+every session's state for as long as at least one session exists, which is how
+the Teams client's "Appear offline" works: it is the preferred pair
+`Offline`/`OffWork`, and it hides whatever `set` or a signed-in client reports
+underneath. `set-preferred` takes one of the six availabilities Graph accepts,
+`Available`, `Busy`, `DoNotDisturb`, `BeRightBack`, `Away` or `Offline`, and
+sends the one activity Graph pairs with it, reporting both back. Its
+`--expiration` is a positive ISO 8601 duration written in whole day, hour,
+minute and second units, `P1D` included; left out,
+Graph applies one day for `Busy` and `DoNotDisturb` and seven days for the
+rest. `clear-preferred` removes the override so the sessions show through
+again. With no session at all the user reads `Offline` whatever the preferred
+presence says, so an account that is never signed into a Teams client needs
+`set` as well as `set-preferred` to appear available.
 
 ### Search
 

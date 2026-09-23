@@ -29,7 +29,7 @@ pub enum MessageRef {
 }
 
 impl MessageRef {
-    pub(crate) fn message_url(&self) -> String {
+    fn message_url(&self) -> String {
         match self {
             Self::Channel {
                 team_id,
@@ -46,29 +46,6 @@ impl MessageRef {
                 chat_id,
                 message_id,
             } => endpoints::chat_message(chat_id, message_id),
-        }
-    }
-
-    /// URL of a Graph action (`softDelete`, `undoSoftDelete`) on this message.
-    fn action_url(&self, action: &str) -> String {
-        match self {
-            Self::Channel {
-                team_id,
-                channel_id,
-                message_id,
-            } => endpoints::channel_message_action(team_id, channel_id, message_id, action),
-            Self::ChannelReply {
-                team_id,
-                channel_id,
-                message_id,
-                reply_id,
-            } => endpoints::channel_message_reply_action(
-                team_id, channel_id, message_id, reply_id, action,
-            ),
-            Self::Chat {
-                chat_id,
-                message_id,
-            } => endpoints::me_chat_message_action(chat_id, message_id, action),
         }
     }
 
@@ -129,11 +106,7 @@ impl MessageRef {
 }
 
 pub async fn get_message(client: &GraphClient, message: &MessageRef) -> Result<ChatMessage> {
-    get_message_at(client, &message.message_url()).await
-}
-
-pub(crate) async fn get_message_at(client: &GraphClient, url: &str) -> Result<ChatMessage> {
-    client.get(url, &[]).await
+    client.get(&message.message_url(), &[]).await
 }
 
 pub async fn list_hosted_contents(
@@ -240,28 +213,45 @@ async fn update_message_at(
     client.patch_no_content(url, req).await
 }
 
-/// Soft-delete a message the signed-in user sent. Graph rejects the DELETE
-/// verb on messages ("Requested API is not supported"); the `softDelete`
-/// action answers `204 No Content`, and does so again for a message that is
-/// already deleted, so the caller must read the message back to learn its
-/// state. The action is delegated-only; the command layer requires a
-/// delegated token first.
-pub async fn soft_delete_message(client: &GraphClient, message: &MessageRef) -> Result<()> {
-    post_action(client, &message.action_url("softDelete")).await
-}
-
-/// Reverse [`soft_delete_message`]; Graph answers `204 No Content`.
-pub async fn undo_soft_delete_message(client: &GraphClient, message: &MessageRef) -> Result<()> {
-    post_action(client, &message.action_url("undoSoftDelete")).await
-}
-
-/// The actions take no parameters. Graph accepts an empty JSON object as the
-/// body, which lets the shared no-content POST helper be reused as is.
-async fn post_action(client: &GraphClient, url: &str) -> Result<()> {
-    client.post_no_content(url, &serde_json::json!({})).await
+pub async fn delete_message(
+    client: &GraphClient,
+    team_id: &str,
+    channel_id: &str,
+    message_id: &str,
+) -> Result<()> {
+    client
+        .delete(&endpoints::channel_message(team_id, channel_id, message_id))
+        .await
 }
 
 // --- Chat Messages ---
+
+/// List the replies in one channel thread in the order Graph returns them.
+///
+/// `list_channel_messages` returns thread roots only, so without this a
+/// caller cannot see whether a question has already been answered.
+pub async fn list_channel_message_replies(
+    client: &GraphClient,
+    team_id: &str,
+    channel_id: &str,
+    message_id: &str,
+    pagination: &PaginationOpts,
+) -> Result<Vec<ChatMessage>> {
+    list_channel_message_replies_at(
+        client,
+        &endpoints::channel_message_replies(team_id, channel_id, message_id),
+        pagination,
+    )
+    .await
+}
+
+async fn list_channel_message_replies_at(
+    client: &GraphClient,
+    url: &str,
+    pagination: &PaginationOpts,
+) -> Result<Vec<ChatMessage>> {
+    client.get_paged(url, &[], pagination).await
+}
 
 pub async fn list_chat_messages(
     client: &GraphClient,
@@ -278,7 +268,15 @@ pub async fn send_chat_message(
     chat_id: &str,
     req: &SendMessageRequest,
 ) -> Result<ChatMessage> {
-    client.post(&endpoints::chat_messages(chat_id), req).await
+    send_chat_message_at(client, &endpoints::chat_messages(chat_id), req).await
+}
+
+async fn send_chat_message_at(
+    client: &GraphClient,
+    url: &str,
+    req: &SendMessageRequest,
+) -> Result<ChatMessage> {
+    client.post(url, req).await
 }
 
 // --- Reactions ---
@@ -399,7 +397,7 @@ mod tests {
     use crate::error::TeamsError;
     use crate::models::message::ItemBody;
     use reqwest::Client;
-    use wiremock::matchers::{body_json, header, method, path};
+    use wiremock::matchers::{body_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn test_client() -> GraphClient {
@@ -550,13 +548,94 @@ mod tests {
 
     fn edit_request() -> SendMessageRequest {
         SendMessageRequest {
+            subject: None,
             body: ItemBody {
                 content_type: Some("text".to_string()),
                 content: Some("corrected text".to_string()),
             },
             attachments: None,
             hosted_contents: None,
+            mentions: None,
         }
+    }
+
+    /// A chat send carrying mentions must post the body and the `mentions`
+    /// array in one request, with the ids Graph needs to keep them.
+    #[tokio::test]
+    async fn chat_send_posts_synchronized_mentions() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chats/19:abc@thread.v2/messages"))
+            .and(body_json(serde_json::json!({
+                "body": {
+                    "contentType": "html",
+                    "content": "<at id=\"0\">Sophie Daniels</at> Please review"
+                },
+                "mentions": [{
+                    "id": 0,
+                    "mentionText": "Sophie Daniels",
+                    "mentioned": {
+                        "user": {
+                            "id": "32cbca05-dc05-454f-b0f3-072f331d4c97",
+                            "displayName": "Sophie Daniels",
+                            "userIdentityType": "aadUser"
+                        }
+                    }
+                }]
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": "1700000000000",
+                "body": {
+                    "contentType": "html",
+                    "content": "<at id=\"0\">Sophie Daniels</at> Please review"
+                },
+                "mentions": [{
+                    "id": 0,
+                    "mentionText": "Sophie Daniels",
+                    "mentioned": {
+                        "user": {
+                            "id": "32cbca05-dc05-454f-b0f3-072f331d4c97",
+                            "displayName": "Sophie Daniels",
+                            "userIdentityType": "aadUser"
+                        }
+                    }
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let req = SendMessageRequest {
+            subject: None,
+            body: ItemBody {
+                content_type: Some("html".into()),
+                content: Some("<at id=\"0\">Sophie Daniels</at> Please review".into()),
+            },
+            attachments: None,
+            hosted_contents: None,
+            mentions: Some(vec![crate::models::message::ChatMessageMention {
+                id: 0,
+                mention_text: "Sophie Daniels".into(),
+                mentioned: crate::models::message::ChatMessageMentioned {
+                    user: Some(crate::models::message::ChatMessageUser {
+                        id: Some("32cbca05-dc05-454f-b0f3-072f331d4c97".into()),
+                        display_name: Some("Sophie Daniels".into()),
+                        user_identity_type: Some("aadUser".into()),
+                    }),
+                },
+            }]),
+        };
+
+        let msg = send_chat_message_at(
+            &test_client(),
+            &format!("{}/chats/19:abc@thread.v2/messages", server.uri()),
+            &req,
+        )
+        .await
+        .unwrap();
+        let mentions = msg.mentions.unwrap();
+        assert_eq!(mentions.len(), 1);
+        assert_eq!(mentions[0].mention_text, "Sophie Daniels");
     }
 
     #[test]
@@ -687,154 +766,65 @@ mod tests {
     }
 
     #[test]
-    fn message_ref_action_urls_follow_graph_paths() {
-        let chat = MessageRef::Chat {
-            chat_id: "19:abc@thread.v2".into(),
-            message_id: "1700000000000".into(),
-        };
+    fn channel_message_replies_endpoint_targets_the_replies_collection() {
         assert_eq!(
-            chat.action_url("softDelete"),
-            "https://graph.microsoft.com/v1.0/me/chats/19:abc@thread.v2/messages/1700000000000/softDelete"
-        );
-        let channel = MessageRef::Channel {
-            team_id: "team-id".into(),
-            channel_id: "channel-id".into(),
-            message_id: "1700000000000".into(),
-        };
-        assert_eq!(
-            channel.action_url("undoSoftDelete"),
-            "https://graph.microsoft.com/v1.0/teams/team-id/channels/channel-id/messages/1700000000000/undoSoftDelete"
-        );
-        let reply = MessageRef::ChannelReply {
-            team_id: "team-id".into(),
-            channel_id: "channel-id".into(),
-            message_id: "1700000000000".into(),
-            reply_id: "1700000000001".into(),
-        };
-        assert_eq!(
-            reply.action_url("softDelete"),
-            "https://graph.microsoft.com/v1.0/teams/team-id/channels/channel-id/messages/1700000000000/replies/1700000000001/softDelete"
+            endpoints::channel_message_replies("team-id", "channel-id", "1700000000000"),
+            "https://graph.microsoft.com/v1.0/teams/team-id/channels/channel-id/messages/1700000000000/replies"
         );
     }
 
-    /// Graph answers both actions with 204 and an empty body, and accepts an
-    /// empty JSON object as the request body.
+    /// The replies collection pages like any other listing: `$top` carries
+    /// the page size and the rows come back as full messages in Graph's order.
     #[tokio::test]
-    async fn soft_delete_posts_the_action_and_accepts_no_content() {
+    async fn list_channel_message_replies_reads_the_replies_collection() {
         let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/me/chats/chat-id/messages/message-id/softDelete"))
-            .and(header("authorization", "Bearer test-token"))
-            .and(body_json(serde_json::json!({})))
-            .respond_with(ResponseTemplate::new(204))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        post_action(
-            &test_client(),
-            &format!(
-                "{}/me/chats/chat-id/messages/message-id/softDelete",
-                server.uri()
-            ),
-        )
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test]
-    async fn undo_soft_delete_posts_the_action_and_accepts_no_content() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
+        Mock::given(method("GET"))
             .and(path(
-                "/teams/team-id/channels/channel-id/messages/message-id/undoSoftDelete",
+                "/teams/team-id/channels/channel-id/messages/1700000000000/replies",
             ))
-            .respond_with(ResponseTemplate::new(204))
+            .and(query_param("$top", "2"))
+            .and(header("authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [
+                    {
+                        "id": "1700000000002",
+                        "createdDateTime": "2026-09-03T08:00:02Z",
+                        "body": { "contentType": "text", "content": "second" }
+                    },
+                    {
+                        "id": "1700000000001",
+                        "createdDateTime": "2026-09-03T08:00:01Z",
+                        "body": { "contentType": "text", "content": "first" }
+                    }
+                ]
+            })))
             .expect(1)
             .mount(&server)
             .await;
 
-        post_action(
+        let replies = list_channel_message_replies_at(
             &test_client(),
             &format!(
-                "{}/teams/team-id/channels/channel-id/messages/message-id/undoSoftDelete",
+                "{}/teams/team-id/channels/channel-id/messages/1700000000000/replies",
                 server.uri()
             ),
+            &PaginationOpts {
+                page_size: 2,
+                all_pages: false,
+            },
         )
         .await
         .unwrap();
-    }
 
-    /// Deleting someone else's message, or a channel post without the
-    /// ChannelMessage.ReadWrite scope, must surface as a permission error.
-    #[tokio::test]
-    async fn soft_delete_reports_permission_denied() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
-                "error": { "code": "Forbidden", "message": "Insufficient privileges" }
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let err = post_action(
-            &test_client(),
-            &format!(
-                "{}/me/chats/chat-id/messages/message-id/softDelete",
-                server.uri()
-            ),
-        )
-        .await
-        .unwrap_err();
-
-        assert!(matches!(err, TeamsError::PermissionDenied(_)), "{err:?}");
-        assert_eq!(err.exit_code(), 4);
-    }
-
-    /// Graph answers a repeat softDelete on an already-deleted message with
-    /// 204 as well, so the action itself never reports "already deleted";
-    /// callers learn the state from the read-back instead.
-    #[tokio::test]
-    async fn repeat_soft_delete_is_not_an_error() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/me/chats/chat-id/messages/message-id/softDelete"))
-            .respond_with(ResponseTemplate::new(204))
-            .expect(2)
-            .mount(&server)
-            .await;
-
-        let url = format!(
-            "{}/me/chats/chat-id/messages/message-id/softDelete",
-            server.uri()
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[0].id.as_deref(), Some("1700000000002"));
+        assert_eq!(replies[1].id.as_deref(), Some("1700000000001"));
+        assert_eq!(
+            replies[1]
+                .body
+                .as_ref()
+                .and_then(|body| body.content.as_deref()),
+            Some("first")
         );
-        post_action(&test_client(), &url).await.unwrap();
-        post_action(&test_client(), &url).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn soft_delete_reports_missing_message() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
-                "error": { "code": "NotFound", "message": "Message not found" }
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let err = post_action(
-            &test_client(),
-            &format!(
-                "{}/me/chats/chat-id/messages/message-id/softDelete",
-                server.uri()
-            ),
-        )
-        .await
-        .unwrap_err();
-
-        assert!(matches!(err, TeamsError::NotFound(_)), "{err:?}");
-        assert_eq!(err.exit_code(), 5);
     }
 }

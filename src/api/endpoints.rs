@@ -11,8 +11,12 @@ pub fn user(id: &str) -> String {
     user_at(GRAPH_V1, id)
 }
 
+/// The `/users/{id}` lookup accepts an object ID or UPN. Guest UPNs contain
+/// `#` (for example `name_domain#EXT#@tenant.onmicrosoft.com`), which would
+/// otherwise be read as a URL fragment and truncate the lookup, so the value
+/// is encoded as a single path segment.
 pub fn user_at(base: &str, id: &str) -> String {
-    format!("{base}/users/{id}")
+    format!("{base}/users/{}", urlencoding::encode(id))
 }
 
 pub fn users() -> String {
@@ -111,38 +115,6 @@ pub fn chat_message(chat_id: &str, message_id: &str) -> String {
     format!("{GRAPH_V1}/chats/{chat_id}/messages/{message_id}")
 }
 
-/// Graph exposes message deletion as the `softDelete` and `undoSoftDelete`
-/// actions rather than the DELETE verb. For channel posts and replies the
-/// action hangs off the message resource.
-pub fn channel_message_action(
-    team_id: &str,
-    channel_id: &str,
-    message_id: &str,
-    action: &str,
-) -> String {
-    format!("{GRAPH_V1}/teams/{team_id}/channels/{channel_id}/messages/{message_id}/{action}")
-}
-
-pub fn channel_message_reply_action(
-    team_id: &str,
-    channel_id: &str,
-    message_id: &str,
-    reply_id: &str,
-    action: &str,
-) -> String {
-    format!(
-        "{GRAPH_V1}/teams/{team_id}/channels/{channel_id}/messages/{message_id}/replies/{reply_id}/{action}"
-    )
-}
-
-/// Chat message actions are only served under a user path. Graph documents
-/// `/users/{id}/chats/...` and also accepts `/me/chats/...`, while the plain
-/// `/chats/{id}/messages/{id}/softDelete` form answers 405 (verified
-/// 2026-08-20 with a delegated token).
-pub fn me_chat_message_action(chat_id: &str, message_id: &str, action: &str) -> String {
-    format!("{GRAPH_V1}/me/chats/{chat_id}/messages/{message_id}/{action}")
-}
-
 // --- Pinned Messages ---
 pub fn channel_pinned_messages(team_id: &str, channel_id: &str) -> String {
     format!("{GRAPH_V1}/teams/{team_id}/channels/{channel_id}/pinnedMessages")
@@ -214,6 +186,14 @@ pub fn clear_presence() -> String {
 
 pub fn set_status_message() -> String {
     format!("{GRAPH_V1}/me/presence/setStatusMessage")
+}
+
+pub fn set_user_preferred_presence() -> String {
+    format!("{GRAPH_V1}/me/presence/setUserPreferredPresence")
+}
+
+pub fn clear_user_preferred_presence() -> String {
+    format!("{GRAPH_V1}/me/presence/clearUserPreferredPresence")
 }
 
 // --- Search ---
@@ -351,6 +331,11 @@ pub fn drive_item_create_link(drive_id: &str, item_id: &str) -> String {
     format!("{GRAPH_V1}/drives/{drive_id}/items/{item_id}/createLink")
 }
 
+/// Grant people access to an item in the signed-in user's OneDrive.
+pub fn me_drive_item_invite(item_id: &str) -> String {
+    format!("{GRAPH_V1}/me/drive/items/{item_id}/invite")
+}
+
 // --- Hosted contents (inline images, code snippets) ---
 
 pub fn channel_message_hosted_contents(
@@ -440,6 +425,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn preferred_presence_write_urls_target_the_signed_in_user() {
+        assert_eq!(
+            set_user_preferred_presence(),
+            "https://graph.microsoft.com/v1.0/me/presence/setUserPreferredPresence"
+        );
+        assert_eq!(
+            clear_user_preferred_presence(),
+            "https://graph.microsoft.com/v1.0/me/presence/clearUserPreferredPresence"
+        );
+    }
+
+    #[test]
     fn sharing_url_token_matches_graph_convention() {
         // Expected value computed with: printf '%s' "$URL" | base64 | tr '+/' '-_' | tr -d '='
         let url = "https://tenant-my.sharepoint.com/personal/user/Documents/Microsoft%20Teams%20Chat%20Files/NetskopeLogs.zip";
@@ -463,6 +460,20 @@ mod tests {
         assert!(url.ends_with("/hostedContents/aWQ9%2Bx%2Fz%3D%3D/$value"));
         assert!(
             url.starts_with("https://graph.microsoft.com/v1.0/teams/t1/channels/c1/messages/m1/")
+        );
+    }
+
+    /// Guest UPNs carry `#` and `@`; unencoded, reqwest would treat the `#`
+    /// as a fragment and Graph would see a truncated identifier.
+    #[test]
+    fn user_lookup_encodes_guest_upn_reserved_characters() {
+        assert_eq!(
+            user("alice_gmail.com#EXT#@tenant.onmicrosoft.com"),
+            "https://graph.microsoft.com/v1.0/users/alice_gmail.com%23EXT%23%40tenant.onmicrosoft.com"
+        );
+        assert_eq!(
+            user("32cbca05-dc05-454f-b0f3-072f331d4c97"),
+            "https://graph.microsoft.com/v1.0/users/32cbca05-dc05-454f-b0f3-072f331d4c97"
         );
     }
 

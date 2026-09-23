@@ -1,6 +1,6 @@
 [package]
 name = "teams-cli"
-version = "0.5.0-alpha.1"
+version = "0.7.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"
@@ -23,10 +23,10 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "1.1"
 keyring = { version = "3", features = ["apple-native", "linux-native", "windows-native"] }
 sha2 = "0.10"
-base64 = "0.22"
+base64 = "0.23"
 getrandom = "0.3"
 hyper = { version = "1", features = ["server", "http1"] }
 http-body-util = "0.1"
@@ -35,7 +35,7 @@ webbrowser = "1"
 url = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-comfy-table = "7"
+comfy-table = "8"
 indicatif = "0.18"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }

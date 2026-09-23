@@ -89,6 +89,13 @@ teams message reply \
   --channel "$CHANNEL_ID" \
   --message-id "$MESSAGE_ID" \
   --body "Acknowledged."
+
+teams message list \
+  --team "$TEAM_ID" \
+  --channel "$CHANNEL_ID" \
+  --message-id "$MESSAGE_ID" \
+  --all-pages \
+  --output json
 ```
 
 ## Controlled smoke test
@@ -114,21 +121,15 @@ teams message reply \
   --output json
 ```
 
-Cleanup only if the signed-in user and tenant policy allow deleting messages
-(channel deletion needs the `ChannelMessage.ReadWrite` delegated scope; `--yes`
-is mandatory):
+Cleanup only if the signed-in user and tenant policy allow deleting messages:
 
 ```bash
 teams message delete \
   --team "$TEAM_ID" \
   --channel "$CHANNEL_ID" \
   --message "$MESSAGE_ID" \
-  --yes \
   --output json
 ```
-
-A deleted message can be restored with `teams message undelete` and the same
-target flags.
 
 ## Upload and download a file
 

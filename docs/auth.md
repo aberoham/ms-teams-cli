@@ -88,7 +88,7 @@ Presence.Read.All
 Presence.ReadWrite
 ```
 
-These permissions cover the current chat read/write, channel-send, team/channel discovery, user lookup, and presence reads and writes. `Presence.ReadWrite` is what `presence set`, `presence status` and `presence clear` require; Microsoft does not mark it admin-consent required. The default does not include `ChannelMessage.Read.All` because Microsoft marks that delegated Graph scope as admin-consent required. Add it explicitly when a workflow needs channel message reads:
+These permissions cover the current chat read/write, channel-send, team/channel discovery, user lookup, and presence reads and writes. `Presence.ReadWrite` is what `presence set`, `presence set-preferred`, `presence status`, `presence clear` and `presence clear-preferred` require; Microsoft does not mark it admin-consent required. The default does not include `ChannelMessage.Read.All` because Microsoft marks that delegated Graph scope as admin-consent required. Add it explicitly when a workflow needs channel message reads:
 
 ```bash
 teams auth login --device-code --scopes "User.Read ChannelMessage.Read.All offline_access"
@@ -108,6 +108,12 @@ SharePoint library for channels (`Files.ReadWrite.All`, typically admin
 consent). Note that Graph masks drives the token cannot see as 404 rather
 than 403, so a "not found" from `--attach` usually means the missing scope,
 not a missing file.
+
+Automatic sharing of chat attachments also reads `/me` and the chat's membership,
+requiring `User.Read` and a chat-member read scope such as `Chat.ReadBasic`.
+The invite itself uses the upload's `Files.ReadWrite` scope. Lookup and sharing
+failures warn on stderr and let the upload/message continue; share the file from
+OneDrive by hand when automatic sharing cannot complete.
 
 Future features may need additional consent.
 
@@ -179,6 +185,22 @@ an existing session. If a requested scope has not been consented, the
 identity platform rejects the whole request (AADSTS65001) rather than issuing
 a narrower token; the CLI then prints the exact `consent-url` command to
 grant it, or fall back to `teams auth login` for interactive consent.
+
+Re-login picks up a scope added to the default set only where consent for it
+can actually be given. The identity platform accepts scopes at authorize time
+that a registration does not list statically — dynamic consent — but a tenant
+that reserves consent to an administrator rejects the login instead, and
+re-running `teams auth login` will not change that. `teams auth consent-url`
+is the route in that case: it builds an admin-consent URL for the scopes the
+profile resolves to, dynamic ones included, so the permission does not have to
+be added to the registration first. Adding it statically is what portal
+consent and `.default` require, and it remains the tidier arrangement for a
+registration you own.
+
+The practical consequence for anyone authenticating through their own
+registration rather than the built-in one: a newly added default scope such as
+`Presence.ReadWrite` may need an administrator to grant it before any session
+carries it, however many times you log in.
 
 Customer-owned delegated app:
 
@@ -304,6 +326,18 @@ profile has no `user`.
   "metadata": { "request_id": "...", "timestamp": "...", "api_version": "v1.0", "duration_ms": 12 }
 }
 ```
+
+On a terminal the same information is printed as a table, with the active
+profile marked `*`:
+
+```text
+  Profile   User             Tenant ID   Auth        Expires
+* default   a@contoso.com    ...         delegated   ...
+  alt       b@contoso.com    ...         delegated   ...
+```
+
+Note that `profiles` is an array of objects; a consumer that read it as an
+array of names needs `.data.profiles[].name`.
 
 On macOS this reads one keychain item per profile, so the first run of a new
 binary may prompt once per profile.
