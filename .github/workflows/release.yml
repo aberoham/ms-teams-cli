@@ -11,8 +11,41 @@ permissions:
   contents: read
 
 jobs:
+  verify-tag:
+    name: Verify tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # A fork may only publish prereleases. A plain vX.Y.Z tag on the fork
+      # would sort as upstream's stable release of the same number and be
+      # installed in its place.
+      - name: Check tag against the package version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          UPSTREAM: ${{ github.repository == 'osodevops/ms-teams-cli' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          if [[ "$RELEASE_TAG" != "v${package_version}" ]]; then
+            echo "Tag ${RELEASE_TAG} does not match Cargo.toml version ${package_version}" >&2
+            exit 1
+          fi
+          if [[ "$UPSTREAM" != true && "$RELEASE_TAG" != *-* ]]; then
+            echo "Forks publish prereleases only; ${RELEASE_TAG} has no prerelease suffix" >&2
+            exit 1
+          fi
+
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
   build:
     name: Build ${{ matrix.target }}
+    needs: [verify-tag, ci]
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -127,6 +160,7 @@ jobs:
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             artifacts/teams-*
             artifacts/checksums-sha256.txt
@@ -134,6 +168,9 @@ jobs:
   homebrew:
     name: Update Homebrew Tap
     needs: release
+    # The personal tap reads fork releases itself, so the fork holds no
+    # credential for it.
+    if: github.repository == 'osodevops/ms-teams-cli'
     runs-on: ubuntu-latest
     timeout-minutes: 12
     permissions: {}
@@ -215,6 +252,7 @@ jobs:
   publish-scoop-manifest:
     name: Publish Scoop Manifest
     needs: release
+    if: github.repository == 'osodevops/ms-teams-cli'
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -229,6 +267,7 @@ jobs:
   notify-docs:
     name: Notify Documentation Site
     needs: release
+    if: github.repository == 'osodevops/ms-teams-cli'
     runs-on: ubuntu-latest
     permissions: {}
     # Never fail a published release over a docs notification. The docs repo also

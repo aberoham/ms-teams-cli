@@ -8,6 +8,8 @@ on:
 
 jobs:
   tag:
+    # The fork cuts prereleases by pushing tags by hand from next.
+    if: github.repository == 'osodevops/ms-teams-cli'
     runs-on: ubuntu-latest
     permissions:
       contents: read
