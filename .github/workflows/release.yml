@@ -34,7 +34,9 @@ jobs:
             echo "Tag ${RELEASE_TAG} does not match Cargo.toml version ${package_version}" >&2
             exit 1
           fi
-          if [[ "$UPSTREAM" != true && "$RELEASE_TAG" != *-* ]]; then
+          # Build metadata after "+" may contain hyphens without making a
+          # prerelease, so only the part before it counts.
+          if [[ "$UPSTREAM" != true && "${RELEASE_TAG%%+*}" != *-* ]]; then
             echo "Forks publish prereleases only; ${RELEASE_TAG} has no prerelease suffix" >&2
             exit 1
           fi
