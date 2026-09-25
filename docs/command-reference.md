@@ -106,7 +106,7 @@ teams channel members remove TEAM_ID CHANNEL_ID MEMBER_ID
 ## Messages
 
 ```bash
-teams message send (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID) [--body TEXT | --stdin] [--content-type text|html] [--adaptive-card PATH] [--image PATH]... [--attach PATH]... [--mention USER]... [--subject TEXT]
+teams message send (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID) [--body TEXT | --stdin] [--content-type text|html] [--adaptive-card PATH] [--image PATH]... [--attach PATH]... [--mention USER]... [--subject TEXT] [--quote MESSAGE_ID]
 teams message list (--team TEAM_ID --channel CHANNEL_ID [--message-id ROOT_MESSAGE_ID] | --chat CHAT_ID)
 teams message get --team TEAM_ID --channel CHANNEL_ID (MESSAGE_ID | --message MESSAGE_ID) [--with-attachments]
 teams message attachments list (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID)
@@ -158,6 +158,13 @@ teams message reply --team TEAM_ID --channel CHANNEL_ID --message-id ROOT_MESSAG
 # Post a channel message with a subject line
 teams message send --team TEAM_ID --channel CHANNEL_ID \
   --subject "Release plan" --body "Details inside."
+```
+
+`--quote MESSAGE_ID` sends a quote-reply in a chat, the same shape the Teams client produces for Reply: the quoted message renders as a card above the new text. The CLI reads the quoted message, attaches a `messageReference` with its sender and a plain-text preview of up to 200 characters, and puts the reference marker at the start of the HTML body. Chats only; `--quote` without `--chat`, or alongside `--team` or `--channel`, is rejected with exit code 2. A message with no user sender, such as one posted by an application, is refused before anything is sent.
+
+```bash
+# Quote-reply to a chat message
+teams message send --chat CHAT_ID --quote MESSAGE_ID --body "Yes, that works."
 ```
 
 `message attachments` unifies the two ways Teams stores message media: inline images pasted into the compose box (Graph "hosted contents") and files attached via SharePoint/OneDrive (`reference` attachments). `list` returns an indexed inventory; `download` fetches everything downloadable by default, or one item with `--index` (add `--path FILE` for an exact destination, or `--path -` to stream to stdout). Inline images and code snippets need no scopes beyond message reads; file attachments additionally require the `Files.Read.All` delegated scope. `message get --with-attachments` embeds the same inventory under `attachment_items` in the message output.

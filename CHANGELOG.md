@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- `teams message send --chat C --quote MESSAGE_ID` quote-replies to a chat message the way the Teams client's Reply does, with the quoted message shown as a card above the new text. The CLI reads the quoted message and attaches a `messageReference` carrying its sender and a plain-text preview. Chats only; a message with no user sender is refused before anything is sent.
+
 ## v0.7.0 - 2026-09-06
 
 ### Added
