@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.7.1-alpha.3 - 2026-09-27
+
+- Sign macOS release binaries with Developer ID, a stable identifier, hardened runtime, and a secure timestamp.
+
 ## Unreleased
 
 ### Added

@@ -10,6 +10,11 @@ env:
 permissions:
   contents: read
 
+# Never cancel a release half way; a second push of the same tag waits.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   verify-tag:
     name: Verify tag
@@ -49,6 +54,8 @@ jobs:
     name: Build ${{ matrix.target }}
     needs: [verify-tag, ci]
     runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
     strategy:
       matrix:
         include:
@@ -78,10 +85,6 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          key: ${{ matrix.target }}
-
       - name: Install musl-tools
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
@@ -101,7 +104,7 @@ jobs:
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'
         run: |
-          package="teams-${{ github.ref_name }}-${{ matrix.target }}"
+          package="teams-${RELEASE_TAG}-${{ matrix.target }}"
           mkdir -p "dist/${package}/bin" "dist/${package}/share/doc" "dist/${package}/share/man/man1" "dist/${package}/share/man/man5" "dist/${package}/share/man/man7"
           cp "target/${{ matrix.target }}/release/teams" "dist/${package}/bin/teams"
           cp docs/man/teams.1 "dist/${package}/share/man/man1/teams.1"
@@ -117,7 +120,7 @@ jobs:
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          $package = "teams-${{ github.ref_name }}-${{ matrix.target }}"
+          $package = "teams-$env:RELEASE_TAG-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path "dist/$package/bin", "dist/$package/share/doc", "dist/$package/share/man/man1", "dist/$package/share/man/man5", "dist/$package/share/man/man7"
           Copy-Item "target/${{ matrix.target }}/release/teams.exe" "dist/$package/bin/teams.exe"
           Copy-Item "docs/man/teams.1" "dist/$package/share/man/man1/teams.1"
@@ -135,9 +138,58 @@ jobs:
           name: teams-${{ matrix.target }}
           path: teams-${{ github.ref_name }}-${{ matrix.target }}.*
 
+  sign-macos:
+    name: Sign macOS ${{ matrix.target }}
+    needs: build
+    runs-on: macos-latest
+    # Defense in depth; the environment reviewer and tag ruleset are the boundary.
+    if: github.repository_owner_id == 586805 && github.actor == 'aberoham' && github.triggering_actor == 'aberoham'
+    environment: release
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: teams-${{ matrix.target }}
+      - name: Prepare signing identity
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: python3 .github/scripts/macos-signing.py prepare
+      - name: Sign and verify the packaged binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="teams-${RELEASE_TAG}-${TARGET}"
+          unpacked="$RUNNER_TEMP/signed-package"
+          mkdir -p "$unpacked"
+          tar xzf "${package}.tar.gz" -C "$unpacked"
+          python3 .github/scripts/macos-signing.py sign "$unpacked/$package/bin/teams" com.aberoham.teams-cli
+          tar czf "${package}.tar.gz" -C "$unpacked" "$package"
+      - name: Replace the unsigned artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: teams-${{ matrix.target }}
+          path: teams-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          overwrite: true
+      - name: Remove signing credentials
+        if: always()
+        run: python3 .github/scripts/macos-signing.py cleanup
+
   release:
     name: Create Release
-    needs: build
+    needs: [build, sign-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
