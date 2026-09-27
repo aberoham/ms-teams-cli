@@ -120,12 +120,12 @@ Symptoms:
 - Clicking "Always Allow" does not stop the prompts.
 - Prompts return after upgrading the CLI or building it from source.
 
-Cause: macOS binds keychain access grants to the exact code signature of the
-binary. The released binaries are ad-hoc signed, so every upgrade produces
-what macOS considers a different application, and a grant made for one build
-does not carry over to the next. Local builds from source each count as
-another distinct application for the same reason. The stored items are
-visible with:
+Cause: macOS binds keychain access grants to the code signature of the
+binary. Releases from `v0.7.1-alpha.3` on are Developer ID signed with the
+stable identifier `com.aberoham.teams-cli`, so a grant carries over from one
+signed release to the next. Earlier releases were ad-hoc signed; each upgrade
+counted as a different application and asked again. Local builds from source
+are still ad-hoc signed. The stored items are visible with:
 
 ```bash
 security find-generic-password -s teams-cli
@@ -133,15 +133,19 @@ security find-generic-password -s teams-cli
 
 Actions:
 
-- Expect one prompt per profile after upgrading or rebuilding; approve it
-  and the grant holds until the binary changes again.
-- To make grants persist across rebuilds, re-sign the binary with a stable
-  local identity: create a self-signed code-signing certificate in Keychain
-  Access (Certificate Assistant, certificate type "Code Signing"), then
-  after each upgrade or build run:
+- Expect one more prompt per profile on the first upgrade from an ad-hoc
+  build to a signed release, or after switching between a signed release and
+  a local build. Choose "Always Allow" and the grant then persists across
+  signed upgrades.
+- Check which kind of binary is installed with
+  `codesign -dv "$(realpath "$(command -v teams)")"`. A signed release shows
+  `TeamIdentifier=2VLHJGU477`.
+- Do not re-sign a Developer ID release: that replaces its signature and
+  brings the prompts back on every upgrade. Re-signing with a stable local
+  certificate helps only for your own source builds:
 
 ```bash
-codesign --force --sign <certificate-name> --identifier com.osodevops.teams-cli "$(command -v teams)"
+codesign --force --sign <certificate-name> --identifier com.aberoham.teams-cli.dev "$(command -v teams)"
 ```
 
 - In tests only, set `TEAMS_CLI_DISABLE_KEYRING=1` so the suite never
