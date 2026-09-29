@@ -5,10 +5,43 @@ use crate::models::member::{AddMemberRequest, ConversationMember};
 use super::client::{GraphClient, PaginationOpts};
 use super::endpoints;
 
-pub async fn list_chats(client: &GraphClient, pagination: &PaginationOpts) -> Result<Vec<Chat>> {
-    client
-        .get_paged(&endpoints::my_chats(), &[], pagination)
-        .await
+/// Ordering `/me/chats` by the newest message requires expanding it: Graph
+/// sorts only on `lastMessagePreview/createdDateTime`, descending, and returns
+/// the preview only under `$expand`, so one option sets both parameters.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum ChatOrder {
+    #[default]
+    Default,
+    Activity,
+}
+
+impl ChatOrder {
+    fn query(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            ChatOrder::Default => &[],
+            ChatOrder::Activity => &[
+                ("$expand", "lastMessagePreview"),
+                ("$orderby", "lastMessagePreview/createdDateTime desc"),
+            ],
+        }
+    }
+}
+
+pub async fn list_chats(
+    client: &GraphClient,
+    order: ChatOrder,
+    pagination: &PaginationOpts,
+) -> Result<Vec<Chat>> {
+    list_chats_at(client, &endpoints::my_chats(), order, pagination).await
+}
+
+async fn list_chats_at(
+    client: &GraphClient,
+    url: &str,
+    order: ChatOrder,
+    pagination: &PaginationOpts,
+) -> Result<Vec<Chat>> {
+    client.get_paged(url, order.query(), pagination).await
 }
 
 pub async fn get_chat(client: &GraphClient, id: &str) -> Result<Chat> {
@@ -89,7 +122,9 @@ mod tests {
     use crate::auth::token::TokenInfo;
     use crate::config::NetworkConfig;
     use reqwest::Client;
-    use wiremock::matchers::{body_partial_json, method, path, query_param_is_missing};
+    use wiremock::matchers::{
+        body_partial_json, method, path, query_param, query_param_is_missing,
+    };
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn test_client() -> GraphClient {
@@ -109,6 +144,65 @@ mod tests {
                 retry_backoff_base: 2,
             },
         }
+    }
+
+    #[tokio::test]
+    async fn list_chats_by_activity_expands_the_preview_and_orders_by_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/me/chats"))
+            .and(query_param("$expand", "lastMessagePreview"))
+            .and(query_param(
+                "$orderby",
+                "lastMessagePreview/createdDateTime desc",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [{"id": "19:abc@thread.v2", "chatType": "group"}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let chats = list_chats_at(
+            &test_client(),
+            &format!("{}/me/chats", server.uri()),
+            ChatOrder::Activity,
+            &PaginationOpts {
+                page_size: 50,
+                all_pages: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(chats.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_chats_default_sends_no_order_and_no_expand() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/me/chats"))
+            .and(query_param_is_missing("$orderby"))
+            .and(query_param_is_missing("$expand"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [{"id": "19:abc@thread.v2", "chatType": "group"}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let chats = list_chats_at(
+            &test_client(),
+            &format!("{}/me/chats", server.uri()),
+            ChatOrder::Default,
+            &PaginationOpts {
+                page_size: 50,
+                all_pages: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(chats.len(), 1);
     }
 
     #[tokio::test]

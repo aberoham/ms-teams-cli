@@ -451,6 +451,7 @@ a no-op. `message list` and `message get` include each message's `reactions` in 
 
 ```bash
 teams chat list
+teams chat list --order-by activity        # newest message first, with lastMessagePreview on each chat
 teams chat get <chat-id>
 teams chat create --type oneOnOne --members <user-id-1>,<user-id-2>
 teams chat create --type oneOnOne --members <your-user-id>,<guest-user-id>:guest   # chat with a guest user

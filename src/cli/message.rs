@@ -8,8 +8,8 @@ use crate::auth;
 use crate::config::ConfigFile;
 use crate::error::{Result, TeamsError};
 use crate::models::message::{
-    ChatMessage, ChatMessageAttachment, ChatMessageMention, ChatMessageMentioned, ChatMessageUser,
-    ItemBody, SendMessageRequest,
+    ChatMessage, ChatMessageAttachment, ChatMessageFrom, ChatMessageMention, ChatMessageMentioned,
+    ChatMessageUser, ItemBody, SendMessageRequest,
 };
 use crate::models::user::User;
 use crate::output::{self, OutputFormat};
@@ -890,7 +890,7 @@ fn message_list_row(message: &ChatMessage) -> Vec<String> {
         message
             .from
             .as_ref()
-            .and_then(|from| from.display_name())
+            .and_then(ChatMessageFrom::display_name)
             .unwrap_or_default()
             .to_string(),
         message.subject.clone().unwrap_or_default(),

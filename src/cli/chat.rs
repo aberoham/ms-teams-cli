@@ -1,18 +1,24 @@
 use clap::Subcommand;
 use std::time::Instant;
 
+use crate::api::chats::ChatOrder;
 use crate::api::{self, GraphClient, PaginationOpts};
 use crate::auth;
 use crate::config::ConfigFile;
 use crate::error::{Result, TeamsError};
-use crate::models::chat::{ChatCreateRequest, ChatUpdateRequest};
+use crate::models::chat::{Chat, ChatCreateRequest, ChatUpdateRequest};
 use crate::models::member::AddMemberRequest;
+use crate::models::message::ChatMessageFrom;
 use crate::output::{self, OutputFormat};
 
 #[derive(Debug, Subcommand)]
 pub enum ChatCommand {
     /// List your chats
-    List,
+    List {
+        /// Order the chats; without it Graph's default order applies
+        #[arg(long, value_enum)]
+        order_by: Option<ChatOrderBy>,
+    },
     /// Get a chat by ID
     Get {
         /// Chat ID
@@ -100,22 +106,16 @@ pub async fn run(
     let client = GraphClient::new(token, &config.network)?;
 
     match cmd {
-        ChatCommand::List => {
+        ChatCommand::List { order_by } => {
             let start = Instant::now();
-            let chats = api::chats::list_chats(&client, pagination).await?;
+            let order = order_by.map_or(ChatOrder::Default, ChatOrder::from);
+            let chats = api::chats::list_chats(&client, order, pagination).await?;
             if format == OutputFormat::Human {
-                let headers = vec!["ID", "Topic", "Type", "Last Updated"];
-                let rows: Vec<Vec<String>> = chats
-                    .iter()
-                    .map(|c| {
-                        vec![
-                            c.id.clone().unwrap_or_default(),
-                            c.topic.clone().unwrap_or_default(),
-                            c.chat_type.clone().unwrap_or_default(),
-                            c.last_updated_date_time.clone().unwrap_or_default(),
-                        ]
-                    })
-                    .collect();
+                let headers = match order {
+                    ChatOrder::Default => vec!["ID", "Topic", "Type", "Last Updated"],
+                    ChatOrder::Activity => vec!["ID", "Topic", "Type", "Last Message", "From"],
+                };
+                let rows = chats.iter().map(|c| chat_list_row(c, order)).collect();
                 output::table::print_table(headers, rows);
             } else {
                 output::print_success_list(format, &chats, start);
@@ -179,6 +179,43 @@ pub async fn run(
 
         ChatCommand::Members { command } => run_members(command, &client, format, pagination).await,
     }
+}
+
+/// The orders `chat list --order-by` offers. Graph sorts `/me/chats` one way
+/// only, by its newest message, so there is a single value; an enum leaves
+/// room for another if Graph adds one, and lets clap list it in `--help` and
+/// shell completions.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum ChatOrderBy {
+    /// Newest message first, with each chat's `lastMessagePreview`
+    Activity,
+}
+
+impl From<ChatOrderBy> for ChatOrder {
+    fn from(order: ChatOrderBy) -> Self {
+        match order {
+            ChatOrderBy::Activity => ChatOrder::Activity,
+        }
+    }
+}
+
+fn chat_list_row(chat: &Chat, order: ChatOrder) -> Vec<String> {
+    let preview = chat.last_message_preview.as_ref();
+    let tail = match order {
+        ChatOrder::Default => vec![chat.last_updated_date_time.clone()],
+        ChatOrder::Activity => vec![
+            preview.and_then(|p| p.created_date_time.clone()),
+            preview
+                .and_then(|p| p.from.as_ref())
+                .and_then(ChatMessageFrom::display_name)
+                .map(str::to_string),
+        ],
+    };
+    [chat.id.clone(), chat.topic.clone(), chat.chat_type.clone()]
+        .into_iter()
+        .chain(tail)
+        .map(Option::unwrap_or_default)
+        .collect()
 }
 
 /// Splits a `--members` entry of the form `<user-id>[:role]`.
@@ -261,6 +298,24 @@ async fn run_members(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activity_row_shows_the_newest_message_not_the_update_time() {
+        let chat: Chat = serde_json::from_value(serde_json::json!({
+            "id": "19:abc@thread.v2",
+            "chatType": "group",
+            "lastUpdatedDateTime": "2026-06-10T12:42:02Z",
+            "lastMessagePreview": {
+                "createdDateTime": "2026-09-09T08:22:39Z",
+                "from": {"user": {"displayName": "Catalin Lupuleti"}}
+            }
+        }))
+        .unwrap();
+        let row = chat_list_row(&chat, ChatOrder::Activity);
+        assert_eq!(&row[3..], ["2026-09-09T08:22:39Z", "Catalin Lupuleti"]);
+        let row = chat_list_row(&chat, ChatOrder::Default);
+        assert_eq!(&row[3..], ["2026-06-10T12:42:02Z"]);
+    }
 
     #[test]
     fn member_spec_defaults_to_owner() {
