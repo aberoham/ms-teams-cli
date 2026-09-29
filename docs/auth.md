@@ -210,6 +210,18 @@ teams auth login --device-code \
   --tenant-id <customer-tenant-id>
 ```
 
+After a successful login, any client ID or tenant ID given with `--client-id`,
+`--tenant-id`, `TEAMS_CLI_CLIENT_ID` or `TEAMS_CLI_TENANT_ID` is saved to the
+profile's `client_id` and `tenant_id` in the config file. The next
+`teams auth login` for that profile signs in through the same registration
+without being told again, instead of falling back to the built-in app. A
+login that fails saves nothing, a value given again replaces the saved one,
+and the profile's other settings are left as they were. Each login prints the
+application and tenant it signs in through, and where each came from, on
+standard error. `auth logout` removes the token but keeps the saved IDs,
+which are settings rather than credentials; change them with another login
+or `teams config set`. The client secret is never saved.
+
 Client credentials for supported app-only Graph operations:
 
 ```bash
