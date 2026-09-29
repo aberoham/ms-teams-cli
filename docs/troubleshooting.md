@@ -120,12 +120,13 @@ Symptoms:
 - Clicking "Always Allow" does not stop the prompts.
 - Prompts return after upgrading the CLI or building it from source.
 
-Cause: macOS binds keychain access grants to the exact code signature of the
-binary. The released binaries are ad-hoc signed, so every upgrade produces
-what macOS considers a different application, and a grant made for one build
-does not carry over to the next. Local builds from source each count as
-another distinct application for the same reason. The stored items are
-visible with:
+Cause: macOS binds keychain access grants to the code signature of the
+binary. Releases from `v0.7.1-alpha.3` on are Developer ID signed with the
+stable identifier `com.aberoham.teams-cli`, so a grant carries over from one
+signed release to the next. Earlier releases were ad-hoc signed; each upgrade
+counted as a different application and asked again. Local builds from source
+are still ad-hoc signed and count as a new application every time. The stored
+items are visible with:
 
 ```bash
 security find-generic-password -s teams-cli
@@ -138,8 +139,14 @@ names the namespace of any build that does not use `teams-cli`.
 
 Actions:
 
-- Expect one prompt per profile after upgrading or rebuilding; approve it
-  and the grant holds until the binary changes again.
+- Expect one more prompt per profile on the first upgrade from an ad-hoc
+  build to a signed release. Choose "Always Allow" and the grant then
+  persists across signed upgrades.
+- Check which kind of binary is installed with
+  `codesign -dv "$(realpath "$(command -v teams)")"`. A signed release shows
+  `TeamIdentifier=2VLHJGU477`.
+- Do not re-sign a Developer ID release: that replaces its signature and
+  brings the prompts back on every upgrade.
 - An unattended process (a daemon, a scheduled job) cannot answer the prompt
   and waits on it. Set `TEAMS_CLI_TOKEN_STORE=file` for that process and sign
   in once with it set; tokens then live in `0600` files under the config
