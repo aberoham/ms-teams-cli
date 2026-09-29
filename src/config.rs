@@ -719,6 +719,7 @@ scopes = "User.Read People.Read offline_access"
             "teams-cli-dev",
             "teams-cli-2",
             "teams-cli-a-b",
+            "teams-cli--",
             &longest,
         ] {
             assert!(is_valid_namespace(name), "{name} should be accepted");
@@ -740,6 +741,7 @@ scopes = "User.Read People.Read offline_access"
             "teams-cli-a_b",
             "teams-cli-../outside",
             "teams-cli-a/b",
+            "teams-cli-dév",
             "CON",
             &too_long,
         ];

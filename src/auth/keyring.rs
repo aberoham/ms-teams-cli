@@ -499,6 +499,21 @@ mod tests {
 
     use super::*;
 
+    /// Keychain entries are named after the build's storage namespace, so a
+    /// debug build cannot reach a release build's items. Building an entry
+    /// does not touch the keychain.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keychain_entries_use_the_storage_namespace_as_their_service() {
+        let entry = OsKeyring::entry("default:token").unwrap();
+        let credential = entry
+            .get_credential()
+            .downcast_ref::<::keyring::macos::MacCredential>()
+            .expect("the macOS keyring builds MacCredential entries");
+        assert_eq!(credential.service, crate::config::NAMESPACE);
+        assert_eq!(credential.account, "default:token");
+    }
+
     #[derive(Default)]
     struct MemoryStore {
         entries: Mutex<BTreeMap<String, Vec<u8>>>,

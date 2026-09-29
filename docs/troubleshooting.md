@@ -133,7 +133,7 @@ security find-generic-password -s teams-cli
 
 Debug builds from source keep their tokens under the separate service
 `teams-cli-dev` (see "Storage namespace" in `CONTRIBUTING.md`), so rebuilding
-from source does not touch the installed release's items. `teams --version`
+from source does not, by default, touch the installed release's items. `teams --version`
 names the namespace of any build that does not use `teams-cli`.
 
 Actions:
