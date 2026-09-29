@@ -322,22 +322,27 @@ pub fn resolve_delegated_tenant_id(
         .unwrap_or_else(|| DEFAULT_DELEGATED_TENANT_ID.to_string())
 }
 
-/// Where login found the ID it signs in with, for the notice it prints.
+/// Where login found the ID it signs in with, for the notice it prints. The
+/// order is the resolution order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdSource {
-    /// `--client-id`/`--tenant-id`, or the matching environment variable.
-    Given,
-    /// The profile's saved `client_id`/`tenant_id`.
+    /// `--client-id` or `--tenant-id`.
+    Flag,
+    /// `TEAMS_CLI_CLIENT_ID` or `TEAMS_CLI_TENANT_ID`.
+    Environment,
+    /// The profile's `client_id` or `tenant_id` in the config file.
     Profile,
     /// The built-in public application or the `organizations` tenant.
     BuiltIn,
 }
 
 impl IdSource {
-    pub fn of(given: Option<&str>, saved: Option<&str>) -> Self {
-        if given.is_some() {
-            IdSource::Given
-        } else if saved.is_some() {
+    pub fn of(flag: bool, environment: bool, profile: bool) -> Self {
+        if flag {
+            IdSource::Flag
+        } else if environment {
+            IdSource::Environment
+        } else if profile {
             IdSource::Profile
         } else {
             IdSource::BuiltIn
@@ -346,49 +351,89 @@ impl IdSource {
 
     pub fn describe(self, profile: &str) -> String {
         match self {
-            IdSource::Given => "given".to_string(),
+            IdSource::Flag => "from the command line".to_string(),
+            IdSource::Environment => "from the environment".to_string(),
             IdSource::Profile => format!("saved in profile '{profile}'"),
             IdSource::BuiltIn => "built-in default".to_string(),
         }
     }
 }
 
-/// Save the client and tenant IDs that a successful login was given, by flag
-/// or environment variable, to the profile's section of the config file, so
-/// that the next `auth login` for the profile signs in through the same
-/// application registration without being told again. Blank values are
-/// ignored. Returns the updated config, or `None` when the profile already
-/// holds these values.
+/// Set a profile's `client_id` and `tenant_id` in the text of a config file,
+/// so that the next `auth login` for the profile signs in through the same
+/// application registration without being told again. Only these two keys
+/// change; comments, formatting, other profiles and keys this version does
+/// not know are left as they were. Blank values are ignored. Returns the new
+/// text, or `None` when the profile already holds these values.
 pub fn remember_registration(
-    config: &ConfigFile,
+    text: &str,
     profile: &str,
     client_id: Option<&str>,
     tenant_id: Option<&str>,
-) -> Option<ConfigFile> {
-    let non_blank = |value: Option<&str>| {
-        value
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(str::to_string)
+) -> Result<Option<String>> {
+    let mut document: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|e| TeamsError::ConfigError(format!("Invalid config TOML: {e}")))?;
+    let not_a_table =
+        |name: &str| TeamsError::ConfigError(format!("Config key `{name}` is not a table"));
+
+    let profiles = document
+        .entry("profiles")
+        .or_insert_with(|| {
+            let mut table = toml_edit::Table::new();
+            table.set_implicit(true);
+            toml_edit::Item::Table(table)
+        })
+        .as_table_like_mut()
+        .ok_or_else(|| not_a_table("profiles"))?;
+    let section = profiles
+        .entry(profile)
+        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+        .as_table_like_mut()
+        .ok_or_else(|| not_a_table(&format!("profiles.{profile}")))?;
+
+    let mut changed = false;
+    for (key, value) in [("client_id", client_id), ("tenant_id", tenant_id)] {
+        let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        if section.get(key).and_then(toml_edit::Item::as_str) != Some(value) {
+            section.insert(key, toml_edit::value(value));
+            changed = true;
+        }
+    }
+    Ok(changed.then(|| document.to_string()))
+}
+
+/// Replace the config file with `text`: written `0600` to a temporary file in
+/// the same directory and renamed over the original, so a failed write never
+/// leaves a truncated config behind.
+pub fn write_config_text(path: &std::path::Path, text: &str) -> Result<()> {
+    let fail = |e: std::io::Error| {
+        TeamsError::ConfigError(format!("Failed to write config to {}: {e}", path.display()))
     };
-    let client_id = non_blank(client_id);
-    let tenant_id = non_blank(tenant_id);
-
-    let saved = config.profiles.get(profile).cloned().unwrap_or_default();
-    let mut updated = saved.clone();
-    if client_id.is_some() {
-        updated.client_id = client_id;
+    let dir = path.parent().ok_or_else(|| {
+        TeamsError::ConfigError(format!("Config path {} has no directory", path.display()))
+    })?;
+    fs::create_dir_all(dir).map_err(fail)?;
+    let tmp = dir.join(format!(".config.toml.{}.tmp", std::process::id()));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
-    if tenant_id.is_some() {
-        updated.tenant_id = tenant_id;
+    let written = options.open(&tmp).and_then(|mut file| {
+        use std::io::Write;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()
+    });
+    if let Err(e) = written.and_then(|()| fs::rename(&tmp, path)) {
+        let _ = fs::remove_file(&tmp);
+        return Err(fail(e));
     }
-    if updated.client_id == saved.client_id && updated.tenant_id == saved.tenant_id {
-        return None;
-    }
-
-    let mut config = config.clone();
-    config.profiles.insert(profile.to_string(), updated);
-    Some(config)
+    Ok(())
 }
 
 /// Append `offline_access` to a delegated scope string when it is missing, so
@@ -845,79 +890,110 @@ scopes = "User.Read People.Read offline_access"
         );
     }
 
-    fn profile_with(client_id: Option<&str>, tenant_id: Option<&str>) -> ProfileConfig {
-        ProfileConfig {
-            client_id: client_id.map(str::to_string),
-            tenant_id: tenant_id.map(str::to_string),
-            ..ProfileConfig::default()
-        }
+    fn remember(text: &str, profile: &str, client: Option<&str>, tenant: Option<&str>) -> String {
+        remember_registration(text, profile, client, tenant)
+            .unwrap()
+            .expect("the registration should change the file")
+    }
+
+    fn parse(text: &str) -> ConfigFile {
+        toml::from_str(text).unwrap()
     }
 
     #[test]
-    fn remember_registration_creates_the_profile_section() {
-        let config = ConfigFile::default();
-        let updated =
-            remember_registration(&config, "benbot", Some("app-1"), Some("tenant-1")).unwrap();
-        let profile = &updated.profiles["benbot"];
-        assert_eq!(profile.client_id.as_deref(), Some("app-1"));
-        assert_eq!(profile.tenant_id.as_deref(), Some("tenant-1"));
+    fn remember_registration_creates_the_file_and_the_profile() {
+        let text = remember("", "benbot", Some("app-1"), Some("tenant-1"));
+        assert_eq!(
+            text,
+            "[profiles.benbot]\nclient_id = \"app-1\"\ntenant_id = \"tenant-1\"\n"
+        );
+    }
+
+    /// Only the two keys change: a hand-edited file keeps its comments, its
+    /// layout, other profiles, the profile's other settings, and keys this
+    /// version of the CLI does not know.
+    #[test]
+    fn remember_registration_edits_only_the_two_keys() {
+        let original = "\
+# Accounts I use
+[default]
+profile = \"work\"   # the usual one
+future_setting = true
+
+[profiles.work]
+# Private app registration
+auth_app = \"byo\"
+client_id = \"old-app\"
+tenant_id = \"tenant-1\"
+scopes = \"User.Read\"
+
+[profiles.other]
+client_id = \"other-app\"
+";
+        let text = remember(original, "work", Some("new-app"), None);
+        assert_eq!(
+            text,
+            original.replace("client_id = \"old-app\"", "client_id = \"new-app\"")
+        );
     }
 
     #[test]
-    fn remember_registration_keeps_the_profile_s_other_settings() {
-        let mut config = ConfigFile::default();
-        let mut profile = profile_with(Some("old-app"), Some("tenant-1"));
-        profile.scopes = Some("User.Read".into());
-        profile.auth_app = Some("byo".into());
-        config.profiles.insert("work".into(), profile);
-
-        let updated = remember_registration(&config, "work", Some("new-app"), None).unwrap();
-        let profile = &updated.profiles["work"];
-        assert_eq!(profile.client_id.as_deref(), Some("new-app"));
-        assert_eq!(profile.tenant_id.as_deref(), Some("tenant-1"));
-        assert_eq!(profile.scopes.as_deref(), Some("User.Read"));
-        assert_eq!(profile.auth_app.as_deref(), Some("byo"));
+    fn remember_registration_adds_a_profile_beside_existing_ones() {
+        let original = "[profiles.work]\nclient_id = \"app-1\"\n";
+        let text = remember(original, "benbot", Some("app-2"), None);
+        let config = parse(&text);
+        assert_eq!(config.profiles["work"].client_id.as_deref(), Some("app-1"));
+        assert_eq!(
+            config.profiles["benbot"].client_id.as_deref(),
+            Some("app-2")
+        );
+        assert!(text.starts_with(original));
     }
 
     #[test]
     fn remember_registration_saves_nothing_when_nothing_changes() {
-        let mut config = ConfigFile::default();
-        config
-            .profiles
-            .insert("work".into(), profile_with(Some("app-1"), Some("tenant-1")));
-        assert!(remember_registration(&config, "work", Some("app-1"), Some("tenant-1")).is_none());
-        assert!(remember_registration(&config, "work", None, None).is_none());
-        assert!(remember_registration(&ConfigFile::default(), "new", None, None).is_none());
+        let original = "[profiles.work]\nclient_id = \"app-1\"\ntenant_id = \"tenant-1\"\n";
+        for (client, tenant) in [
+            (Some("app-1"), Some("tenant-1")),
+            (None, None),
+            (Some("  "), Some("")),
+        ] {
+            assert_eq!(
+                remember_registration(original, "work", client, tenant).unwrap(),
+                None
+            );
+        }
+        assert_eq!(remember_registration("", "new", None, None).unwrap(), None);
     }
 
     #[test]
-    fn remember_registration_ignores_blank_values() {
-        let mut config = ConfigFile::default();
-        config
-            .profiles
-            .insert("work".into(), profile_with(Some("app-1"), Some("tenant-1")));
-        assert!(remember_registration(&config, "work", Some("  "), Some("")).is_none());
-        let updated = remember_registration(&config, "work", Some(" app-2 "), Some(" ")).unwrap();
-        assert_eq!(updated.profiles["work"].client_id.as_deref(), Some("app-2"));
+    fn remember_registration_trims_values_and_ignores_blank_ones() {
+        let original = "[profiles.work]\nclient_id = \"app-1\"\ntenant_id = \"tenant-1\"\n";
+        let config = parse(&remember(original, "work", Some(" app-2 "), Some(" ")));
+        assert_eq!(config.profiles["work"].client_id.as_deref(), Some("app-2"));
         assert_eq!(
-            updated.profiles["work"].tenant_id.as_deref(),
+            config.profiles["work"].tenant_id.as_deref(),
             Some("tenant-1")
         );
+    }
+
+    #[test]
+    fn remember_registration_refuses_a_file_it_cannot_edit_safely() {
+        assert!(remember_registration("profiles = \"x\"\n", "work", Some("a"), None).is_err());
+        assert!(remember_registration("[profiles\n", "work", Some("a"), None).is_err());
     }
 
     /// The saved IDs are what the next login resolves when it is given none,
     /// including for a profile that requires its own application.
     #[test]
     fn a_remembered_registration_is_used_by_the_next_login() {
-        let mut config = ConfigFile::default();
-        let locked = ProfileConfig {
-            auth_app: Some("byo".into()),
-            ..ProfileConfig::default()
-        };
-        config.profiles.insert("work".into(), locked);
-        let config =
-            remember_registration(&config, "work", Some("app-1"), Some("tenant-1")).unwrap();
-
+        let text = remember(
+            "[profiles.work]\nauth_app = \"byo\"\n",
+            "work",
+            Some("app-1"),
+            Some("tenant-1"),
+        );
+        let config = parse(&text);
         assert_eq!(
             resolve_delegated_client_id(None, "work", &config).unwrap(),
             "app-1"
@@ -933,10 +1009,27 @@ scopes = "User.Read People.Read offline_access"
     }
 
     #[test]
-    fn id_source_prefers_given_then_saved_then_built_in() {
-        assert_eq!(IdSource::of(Some("a"), Some("b")), IdSource::Given);
-        assert_eq!(IdSource::of(None, Some("b")), IdSource::Profile);
-        assert_eq!(IdSource::of(None, None), IdSource::BuiltIn);
+    fn write_config_text_replaces_the_file_privately() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("config.toml");
+        write_config_text(&path, "a = 1\n").unwrap();
+        write_config_text(&path, "a = 2\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "a = 2\n");
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn id_source_follows_the_resolution_order() {
+        assert_eq!(IdSource::of(true, true, true), IdSource::Flag);
+        assert_eq!(IdSource::of(false, true, true), IdSource::Environment);
+        assert_eq!(IdSource::of(false, false, true), IdSource::Profile);
+        assert_eq!(IdSource::of(false, false, false), IdSource::BuiltIn);
         assert_eq!(
             IdSource::Profile.describe("work"),
             "saved in profile 'work'"

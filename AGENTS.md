@@ -64,7 +64,7 @@ When adding errors, update `exit_code()` and `error_code()` together and add tes
 
 Credential resolution is intentionally predictable:
 
-- Client ID and tenant ID: CLI flag, then `TEAMS_CLI_CLIENT_ID` or `TEAMS_CLI_TENANT_ID`, then config profile. A successful `auth login` writes given values into the profile (`config::remember_registration`), so later logins reuse them.
+- Client ID and tenant ID: CLI flag, then `TEAMS_CLI_CLIENT_ID` or `TEAMS_CLI_TENANT_ID`, then config profile. A successful `auth login` writes `--client-id`/`--tenant-id` values (not the environment variables) into the profile with `config::remember_registration`, which edits the TOML text in place, so later logins reuse them.
 - Client secret: CLI flag, then `TEAMS_CLI_CLIENT_SECRET`.
 - Access token for normal commands: `TEAMS_CLI_ACCESS_TOKEN`, then OS keyring token for the selected profile.
 
