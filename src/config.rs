@@ -12,16 +12,16 @@ pub const DEFAULT_DELEGATED_TENANT_ID: &str = "organizations";
 pub const DEFAULT_DELEGATED_SCOPES: &str = "User.Read Team.ReadBasic.All Channel.ReadBasic.All ChannelMessage.Send Chat.ReadWrite ChatMessage.Send ChatMessage.Read User.ReadBasic.All Presence.Read.All Presence.ReadWrite offline_access";
 pub const DEFAULT_REDIRECT_URI: &str = "http://localhost:8400/callback";
 
-/// Storage namespace of release builds, which every installed `teams` uses.
+/// Default storage namespace of release builds.
 pub const RELEASE_NAMESPACE: &str = "teams-cli";
 
 /// Names the keyring service and the configuration directory this binary
 /// uses. It is fixed at compile time: `TEAMS_CLI_BUILD_NAMESPACE` in the
 /// environment of `cargo build` if set, otherwise `teams-cli-dev` for a debug
-/// build and `teams-cli` for a release build. A binary built from source thus
-/// keeps its own tokens and config file, and never reads or rewrites the
-/// keychain items of an installed release, which on macOS would raise an
-/// access prompt for whichever of the two builds did not create the item.
+/// build and `teams-cli` for a release build. A default debug build thus keeps
+/// its own tokens and config file, and does not read or rewrite the keychain
+/// items of an installed release, which on macOS would raise an access prompt
+/// for whichever of the two builds did not create the item.
 pub const NAMESPACE: &str = checked_namespace(match option_env!("TEAMS_CLI_BUILD_NAMESPACE") {
     Some(namespace) => namespace,
     None if cfg!(debug_assertions) => "teams-cli-dev",

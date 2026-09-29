@@ -1426,9 +1426,9 @@ fn expected_namespace() -> &'static str {
     }
 }
 
-/// `teams --version` names a non-release storage namespace, which is how a
-/// person, an agent or `scripts/macos-dev-sign.sh` tells a source build from
-/// an installed release without opening the keyring.
+/// `teams --version` names a non-release storage namespace, so a person or an
+/// agent can tell which tokens and config a binary uses without opening the
+/// keyring.
 #[test]
 fn version_reports_a_non_release_storage_namespace() {
     let namespace = expected_namespace();

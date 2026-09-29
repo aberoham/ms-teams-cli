@@ -499,9 +499,9 @@ mod tests {
 
     use super::*;
 
-    /// Keychain entries are named after the build's storage namespace, so a
-    /// debug build cannot reach a release build's items. Building an entry
-    /// does not touch the keychain.
+    /// Keychain entries are named after the build's storage namespace, so by
+    /// default a debug build does not reach a release build's items.
+    /// Building an entry does not touch the keychain.
     #[cfg(target_os = "macos")]
     #[test]
     fn keychain_entries_use_the_storage_namespace_as_their_service() {
