@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.8.1-alpha.1 - 2026-09-29
+
+Fork prerelease: upstream v0.8.0 with #109, #110 and #111, which are listed under Unreleased below, and:
+
+- Release archives carry build provenance attestations; check one with `gh attestation verify <archive> --repo aberoham/ms-teams-cli`.
+- Upstream's stable releases are mirrored as signed, notarized and attested `upstream-vX.Y.Z` releases, built from upstream's own commit.
+
 ## Unreleased
 
 ### Added
