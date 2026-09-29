@@ -718,9 +718,9 @@ fn message_list_row(message: &ChatMessage) -> Vec<String> {
         message
             .from
             .as_ref()
-            .and_then(|from| from.user.as_ref())
-            .and_then(|user| user.display_name.clone())
-            .unwrap_or_default(),
+            .and_then(|from| from.display_name())
+            .unwrap_or_default()
+            .to_string(),
         message.subject.clone().unwrap_or_default(),
         message
             .body
@@ -919,6 +919,7 @@ fn apply_mentions(req: &mut SendMessageRequest, identities: &[MentionIdentity]) 
                         display_name: Some(identity.display_name.clone()),
                         user_identity_type: Some("aadUser".to_string()),
                     }),
+                    ..Default::default()
                 },
             })
             .collect(),
@@ -1006,6 +1007,16 @@ mod tests {
         );
         message.subject = None;
         assert_eq!(message_list_row(&message)[2], "");
+    }
+
+    #[test]
+    fn human_message_row_names_an_application_sender() {
+        let message: ChatMessage = serde_json::from_value(serde_json::json!({
+            "id": "message-id",
+            "from": {"user": null, "application": {"displayName": "Workflows"}}
+        }))
+        .unwrap();
+        assert_eq!(message_list_row(&message)[1], "Workflows");
     }
 
     fn write_card(dir: &std::path::Path) -> String {
