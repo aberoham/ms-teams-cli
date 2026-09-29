@@ -281,7 +281,11 @@ Tokens are stored in the operating system keyring:
 
 The config file stores profile settings, not access tokens.
 
-On macOS and Linux each profile's token is one keyring item named `<profile>:token`. Windows Credential Manager limits a credential to 2560 bytes, which is smaller than a typical Microsoft Graph token bundle, so on Windows the serialized token is split across several entries: `teams-cli` / `<profile>:token` holds a small header (`{"chunks": N}`) and `<profile>:token:0` through `<profile>:token:N-1` hold the pieces. `teams auth logout` removes all of them.
+`TEAMS_CLI_TOKEN_STORE=file` keeps them in files instead: one per entry under the config directory's `tokens/` (`<profile>.token`, `profile-index`), the directory `0700` and each file `0600` on Unix, written through a temporary file and renamed so a reader never sees a partial token. It is for a process that cannot answer a keychain dialog or has no keyring — a daemon, a server, a container. On macOS the keychain grants access to a code signature, so an unattended process running a freshly built binary is asked once per profile per build (and a build signed with a local identity is still asked, because the item's partition list names build hashes); on Linux without a Secret Service the keyring cannot store a token at all. The two stores are independent: log in once under each you use, and `teams auth logout` removes the token from the store it runs under.
+
+The file store keeps the refresh token unencrypted on disk, guarded only by the directory and file permissions, so prefer the keyring where a process can use it and reach for `file` only where it cannot. On a shared host protect the config directory accordingly, and on Windows (no `0600`) rely on the profile directory's ACL. A token file readable by the group or by others draws a warning on stderr naming it. The two stores do not share logins: after switching, run `teams auth login` again. Any value other than `keyring`, `keychain` or `file` is refused before the command runs, as invalid input (exit code 2).
+
+On macOS and Linux each profile's keyring token is one item named `<profile>:token`. Windows Credential Manager limits a credential to 2560 bytes, which is smaller than a typical Microsoft Graph token bundle, so on Windows the serialized token is split across several entries: `teams-cli` / `<profile>:token` holds a small header (`{"chunks": N}`) and `<profile>:token:0` through `<profile>:token:N-1` hold the pieces. `teams auth logout` removes all of them.
 
 The CLI automatically redeems the stored refresh token when an access token is expired or near expiry, then updates the keyring with the refreshed token. If no refresh token is stored, or the identity platform rejects the refresh request, commands return `AUTH_TOKEN_EXPIRED` and the user must run `teams auth login` again.
 
@@ -359,6 +363,7 @@ teams auth logout --all
 | `TEAMS_CLI_CLIENT_SECRET` | Client secret for client credentials flow. |
 | `TEAMS_CLI_TENANT_ID` | Tenant ID or tenant domain. |
 | `TEAMS_CLI_SCOPES` | Delegated OAuth scopes for login. Same precedence as `--scopes`; ignored by client credentials login. |
+| `TEAMS_CLI_TOKEN_STORE` | `keyring` (default) or `file`: where tokens are kept. `file` writes them under the config directory's `tokens/`, for unattended processes and hosts without a keyring. |
 | `TEAMS_CLI_DISABLE_KEYRING` | Test-only escape hatch used by CLI tests to avoid real OS keyring access. |
 
 ## Microsoft references

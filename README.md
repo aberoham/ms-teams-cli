@@ -223,6 +223,8 @@ teams auth login --client-credentials \
 ```
 
 Tokens are cached in the OS keyring — subsequent commands reuse the session without re-authentication.
+An unattended process (a daemon, a server, a container) sets `TEAMS_CLI_TOKEN_STORE=file` to keep them
+in `0600` files under the config directory instead, where no keychain dialog can block it.
 
 Default delegated login asks for chat, channel-send, discovery, user lookup,
 and presence scopes. It intentionally does not request

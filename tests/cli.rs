@@ -20,6 +20,7 @@ fn teams_process() -> std::process::Command {
     cmd.env_remove("TEAMS_CLI_CLIENT_SECRET");
     cmd.env_remove("TEAMS_CLI_TENANT_ID");
     cmd.env_remove("TEAMS_CLI_ACCESS_TOKEN");
+    cmd.env_remove("TEAMS_CLI_TOKEN_STORE");
     cmd
 }
 
@@ -1276,4 +1277,72 @@ fn message_update_requires_channel_alongside_team() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("--channel"));
+}
+
+/// A mistyped `TEAMS_CLI_TOKEN_STORE` is refused before any command runs, in
+/// the error envelope with exit code 2. Token reads treat every store error as
+/// "not signed in", so without the check a typo would read as exit code 3 and
+/// send the caller to log in again.
+#[test]
+fn unknown_token_store_is_invalid_input_not_an_auth_error() {
+    for args in [["chat", "list"], ["auth", "list"]] {
+        teams()
+            .env("TEAMS_CLI_TOKEN_STORE", "flie")
+            .args(args)
+            .args(["--output", "json"])
+            .assert()
+            .code(2)
+            .stdout(
+                predicate::str::contains("INVALID_INPUT")
+                    .and(predicate::str::contains("TEAMS_CLI_TOKEN_STORE=flie"))
+                    .and(predicate::str::contains("`file`")),
+            );
+    }
+}
+
+/// With `TEAMS_CLI_TOKEN_STORE=file` the CLI finds a profile's token under the
+/// config directory's `tokens/` and `auth logout` removes it, without touching
+/// the OS keyring. Not on Windows, whose config directory ignores `HOME`.
+#[cfg(not(windows))]
+#[test]
+fn file_token_store_lists_and_logs_out_a_profile() {
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let config_dir = if cfg!(target_os = "macos") {
+        home.path().join("Library/Application Support")
+    } else {
+        home.path().to_path_buf()
+    };
+    let tokens = config_dir.join("teams-cli").join("tokens");
+    fs::create_dir_all(&tokens).unwrap();
+    fs::write(tokens.join("profile-index"), r#"["work"]"#).unwrap();
+    fs::write(
+        tokens.join("work.token"),
+        r#"{"access_token":"not-a-jwt","token_type":"Bearer","profile":"work"}"#,
+    )
+    .unwrap();
+
+    let file_store = || {
+        let mut cmd = teams();
+        cmd.env_remove("TEAMS_CLI_DISABLE_KEYRING")
+            .env("TEAMS_CLI_TOKEN_STORE", "file")
+            .env("HOME", home.path())
+            .env("XDG_CONFIG_HOME", home.path());
+        cmd
+    };
+
+    file_store()
+        .args(["auth", "list", "--output", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""name": "work""#));
+
+    file_store()
+        .args(["auth", "logout", "--profile", "work", "--output", "json"])
+        .assert()
+        .success();
+    assert!(!tokens.join("work.token").exists());
+    assert_eq!(
+        fs::read_to_string(tokens.join("profile-index")).unwrap(),
+        "[]"
+    );
 }

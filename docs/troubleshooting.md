@@ -135,6 +135,10 @@ Actions:
 
 - Expect one prompt per profile after upgrading or rebuilding; approve it
   and the grant holds until the binary changes again.
+- An unattended process (a daemon, a scheduled job) cannot answer the prompt
+  and waits on it. Set `TEAMS_CLI_TOKEN_STORE=file` for that process and sign
+  in once with it set; tokens then live in `0600` files under the config
+  directory and no keychain dialog is involved.
 - To make grants persist across rebuilds, re-sign the binary with a stable
   local identity: create a self-signed code-signing certificate in Keychain
   Access (Certificate Assistant, certificate type "Code Signing"), then
@@ -188,6 +192,9 @@ In headless Linux CI, prefer one of:
 - Use `TEAMS_CLI_ACCESS_TOKEN` for short-lived tests.
 - Run CLI tests with `TEAMS_CLI_DISABLE_KEYRING=1`.
 - Install and configure a keyring backend if testing real login.
+- On a server or in a container with no Secret Service, set
+  `TEAMS_CLI_TOKEN_STORE=file` to keep tokens in `0600` files under the
+  config directory instead.
 
 ## Browser login callback fails
 

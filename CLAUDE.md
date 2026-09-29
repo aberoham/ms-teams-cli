@@ -95,6 +95,7 @@ CLI flags > env vars (TEAMS_CLI_CLIENT_ID, TEAMS_CLI_CLIENT_SECRET, TEAMS_CLI_TE
 - `TEAMS_CLI_CLIENT_SECRET` — Azure AD client secret
 - `TEAMS_CLI_TENANT_ID` — Azure AD tenant ID
 - `TEAMS_CLI_ACCESS_TOKEN` — Pre-obtained access token
+- `TEAMS_CLI_TOKEN_STORE` — `keyring` (default) or `file` (0600 files under the config dir's `tokens/`)
 - `RUST_LOG` — Tracing filter level
 
 ## Config

@@ -158,6 +158,18 @@ Delegated OAuth scopes for login. Same precedence as
 .B --scopes.
 Ignored by client credentials login.
 .TP
+.B TEAMS_CLI_TOKEN_STORE
+.B keyring
+(default) or
+.B file.
+With
+.B file,
+tokens are kept unencrypted in mode 0600 files under the config
+directory's tokens/ (directory 0700) instead of the OS keyring, so an
+unattended process never waits on a keychain dialog and a host without a
+Secret Service can still sign in. Logins are not shared between the two
+stores: sign in again after switching.
+.TP
 .B TEAMS_CLI_DISABLE_KEYRING
 Test-only switch used to avoid OS keyring access in automated tests. Do not use
 for real login sessions.

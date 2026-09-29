@@ -60,7 +60,11 @@ async fn main() {
     };
 
     // Run the command
-    if let Err(e) = cli::run(cli, &config).await {
+    let result = match auth::keyring::check_token_store() {
+        Ok(()) => cli::run(cli, &config).await,
+        Err(e) => Err(e),
+    };
+    if let Err(e) = result {
         let format = OutputFormat::detect(crate::config::resolve_output_format(
             output_format_flag.as_deref(),
             &config,

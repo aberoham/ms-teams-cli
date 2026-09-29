@@ -366,6 +366,16 @@ Delegated OAuth scopes for login. Same precedence as
 .B --scopes.
 Ignored by client credentials login.
 .TP
+.B TEAMS_CLI_TOKEN_STORE
+Where tokens are kept:
+.B keyring
+(default) or
+.B file.
+.B file
+writes them unencrypted to mode 0600 files under the config
+directory's tokens/, for unattended processes and hosts without a keyring.
+Any other value is an invalid-input error (exit code 2).
+.TP
 .B RUST_LOG
 Tracing filter, for example
 .B debug
