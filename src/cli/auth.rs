@@ -16,18 +16,20 @@ pub struct LoginArgs {
     #[arg(long)]
     device_code: bool,
 
-    /// Azure AD application (client) ID; saved to the profile after a
-    /// successful login and reused by later logins
-    #[arg(long, env = "TEAMS_CLI_CLIENT_ID")]
+    /// Azure AD application (client) ID. Saved to the profile after a
+    /// successful login and reused by later logins. TEAMS_CLI_CLIENT_ID is
+    /// used when this is absent, but is not saved
+    #[arg(long)]
     client_id: Option<String>,
 
     /// Azure AD client secret
     #[arg(long, env = "TEAMS_CLI_CLIENT_SECRET")]
     client_secret: Option<String>,
 
-    /// Azure AD tenant ID; saved to the profile after a successful login and
-    /// reused by later logins
-    #[arg(long, env = "TEAMS_CLI_TENANT_ID")]
+    /// Azure AD tenant ID. Saved to the profile after a successful login and
+    /// reused by later logins. TEAMS_CLI_TENANT_ID is used when this is
+    /// absent, but is not saved
+    #[arg(long)]
     tenant_id: Option<String>,
 
     /// OAuth scopes (space-separated, for delegated flows)
@@ -247,36 +249,74 @@ fn login_registration(
     Ok((client_id, tenant_id))
 }
 
-/// Save the IDs a successful login was given to the profile, and say on
-/// stderr if that fails: the login itself succeeded and its token is stored,
-/// so failing the command would misreport it. The config file is read again
-/// first, because an interactive login can take minutes and the file may
-/// have been edited meanwhile. Returns whether this login wrote new IDs to
-/// the config file.
-fn save_registration(args: &LoginArgs, config_path: Option<&str>, profile: &str) -> bool {
-    let warn = |e: TeamsError| {
+/// Save the IDs given on the command line to the profile, editing only those
+/// two keys in the config file. The file is read again here rather than
+/// reused from startup, because an interactive login can take minutes and
+/// the file may have been edited meanwhile.
+fn save_registration(args: &LoginArgs, config_path: Option<&str>, profile: &str) -> Result<bool> {
+    let path = match config_path {
+        Some(path) => std::path::PathBuf::from(path),
+        None => config::default_config_path()?,
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(TeamsError::ConfigError(format!(
+                "Failed to read config at {}: {e}",
+                path.display()
+            )))
+        }
+    };
+    let updated = config::remember_registration(
+        &text,
+        profile,
+        args.client_id.as_deref(),
+        args.tenant_id.as_deref(),
+    )?;
+    match updated {
+        Some(updated) => config::write_config_text(&path, &updated).map(|()| true),
+        None => Ok(false),
+    }
+}
+
+/// Report a failure to save the IDs on stderr rather than failing the
+/// command: the login itself succeeded and its token is stored.
+fn save_registration_or_warn(args: &LoginArgs, config_path: Option<&str>, profile: &str) -> bool {
+    save_registration(args, config_path, profile).unwrap_or_else(|e| {
         eprintln!(
             "Warning: signed in, but could not save the client and tenant IDs to profile \
              '{profile}': {e}. Pass them again at the next login."
         );
         false
-    };
-    let current = match config::load_config(config_path) {
-        Ok(current) => current,
-        Err(e) => return warn(e),
-    };
-    let Some(updated) = config::remember_registration(
-        &current,
-        profile,
-        args.client_id.as_deref(),
-        args.tenant_id.as_deref(),
-    ) else {
-        return false;
-    };
-    match config::save_config(&updated, config_path) {
-        Ok(()) => true,
-        Err(e) => warn(e),
-    }
+    })
+}
+
+/// Say which application and tenant a login uses, and where each came from,
+/// before the sign-in starts.
+fn print_registration_notice(
+    args: &LoginArgs,
+    config: &ConfigFile,
+    profile: &str,
+    client_id: &str,
+    tenant_id: &str,
+) {
+    let saved = config.profiles.get(profile);
+    let client_source = config::IdSource::of(
+        args.client_id.is_some(),
+        std::env::var("TEAMS_CLI_CLIENT_ID").is_ok(),
+        saved.is_some_and(|p| p.client_id.is_some()),
+    );
+    let tenant_source = config::IdSource::of(
+        args.tenant_id.is_some(),
+        std::env::var("TEAMS_CLI_TENANT_ID").is_ok(),
+        saved.is_some_and(|p| p.tenant_id.is_some()),
+    );
+    eprintln!(
+        "Signing in through application {client_id} ({}) in tenant {tenant_id} ({})",
+        client_source.describe(profile),
+        tenant_source.describe(profile),
+    );
 }
 
 async fn login(
@@ -299,20 +339,7 @@ async fn login(
     } else {
         None
     };
-    let saved = config.profiles.get(profile);
-    let client_source = config::IdSource::of(
-        args.client_id.as_deref(),
-        saved.and_then(|p| p.client_id.as_deref()),
-    );
-    let tenant_source = config::IdSource::of(
-        args.tenant_id.as_deref(),
-        saved.and_then(|p| p.tenant_id.as_deref()),
-    );
-    eprintln!(
-        "Signing in through application {client_id} ({}) in tenant {tenant_id} ({})",
-        client_source.describe(profile),
-        tenant_source.describe(profile),
-    );
+    print_registration_notice(&args, config, profile, &client_id, &tenant_id);
 
     let token_response = if let Some(client_secret) = client_secret {
         auth::client_credentials::authenticate(&client_id, &client_secret, &tenant_id).await?
@@ -328,7 +355,7 @@ async fn login(
     let token_info = token_response.into_token_info(profile);
     auth::keyring::store_token(profile, &token_info)?;
     auth::keyring::add_profile_to_index(profile)?;
-    let saved_to_config = save_registration(&args, config_path, profile);
+    let saved_to_config = save_registration_or_warn(&args, config_path, profile);
 
     let msg = serde_json::json!({
         "message": "Authenticated successfully",
