@@ -106,7 +106,7 @@ teams channel members remove TEAM_ID CHANNEL_ID MEMBER_ID
 ## Messages
 
 ```bash
-teams message send (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID) [--body TEXT | --stdin] [--content-type text|html] [--adaptive-card PATH] [--image PATH]... [--attach PATH]... [--mention USER]... [--subject TEXT]
+teams message send (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID) [--body TEXT | --stdin] [--content-type text|html] [--adaptive-card PATH] [--image PATH]... [--attach PATH]... [--mention USER]... [--subject TEXT] [--quote MESSAGE_ID]...
 teams message list (--team TEAM_ID --channel CHANNEL_ID [--message-id ROOT_MESSAGE_ID] | --chat CHAT_ID)
 teams message get --team TEAM_ID --channel CHANNEL_ID (MESSAGE_ID | --message MESSAGE_ID) [--with-attachments]
 teams message attachments list (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID)
@@ -162,6 +162,13 @@ teams message send --team TEAM_ID --channel CHANNEL_ID \
 ```
 
 `message delete` soft-deletes your own message through the Graph `softDelete` action (Graph does not support the DELETE verb on messages); `message undelete` reverses it with `undoSoftDelete`. Both are delegated-only. Chat targets need `Chat.ReadWrite`; channel posts and replies need the `ChannelMessage.ReadWrite` delegated scope, which the default login does not request and which requires admin consent (`teams auth consent-url --scopes ...`). Deletion must be confirmed with `--yes`: without it the command exits with code 2 and sends nothing. Graph returns no content on success, and answers 204 again for a message that is already deleted, so each command reads the message back and prints it: a deleted message has `deletedDateTime` set and an empty body, a restored one has it cleared. If the read-back fails the change has still been applied and the output is `{"id": ..., "deleted": true, "readBackError": ...}` (or `"restored"`).
+
+`--quote MESSAGE_ID` sends a quote-reply in a chat, as the Teams client's Reply does: the quoted message renders as a card above the new text. It uses Graph's `replyWithQuote` action (delegated `ChatMessage.Send`), which reads the quoted message and builds the card and its preview itself. Repeat `--quote` to quote several messages of the same chat in one reply; Graph accepts up to 5. The reply is sent as HTML, since the action reads the body as HTML whatever its content type, so plain text is escaped first. An ID that is not a message in the chat is reported as `NOT_FOUND` (exit code 5). Chats only; `--quote` without `--chat`, or alongside `--team`/`--channel`, is a usage error (exit code 2).
+
+```bash
+# Quote-reply to a chat message
+teams message send --chat CHAT_ID --quote MESSAGE_ID --body "Yes, that works."
+```
 
 `message attachments` unifies the two ways Teams stores message media: inline images pasted into the compose box (Graph "hosted contents") and files attached via SharePoint/OneDrive (`reference` attachments). `list` returns an indexed inventory; `download` fetches everything downloadable by default, or one item with `--index` (add `--path FILE` for an exact destination, or `--path -` to stream to stdout). Inline images and code snippets need no scopes beyond message reads; file attachments additionally require the `Files.Read.All` delegated scope. `message get --with-attachments` embeds the same inventory under `attachment_items` in the message output.
 

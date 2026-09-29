@@ -51,6 +51,15 @@ pub enum MessageCommand {
         /// Subject line for a channel root message
         #[arg(long, requires = "channel", conflicts_with = "chat")]
         subject: Option<String>,
+        /// Quote-reply to this chat message, as the Teams client's Reply does
+        /// (repeatable; Graph accepts up to 5)
+        #[arg(
+            long,
+            value_name = "MESSAGE_ID",
+            requires = "chat",
+            conflicts_with_all = ["team", "channel"]
+        )]
+        quote: Vec<String>,
     },
     /// List messages in a channel or chat
     List {
@@ -361,6 +370,7 @@ pub async fn run(
             attach,
             mention,
             subject,
+            quote,
         } => {
             let start = Instant::now();
             auth::require_delegated_token(&client.token, "Sending Teams messages")?;
@@ -389,7 +399,15 @@ pub async fn run(
                     super::message_media::AttachDestination::Chat { chat_id: &chat_id },
                 )
                 .await?;
-                api::messages::send_chat_message(&client, &chat_id, &req).await?
+                if quote.is_empty() {
+                    api::messages::send_chat_message(&client, &chat_id, &req).await?
+                } else {
+                    // replyWithQuote reads the body as HTML even when it is
+                    // marked text, so plain text is escaped into HTML first or
+                    // its `<` and `&` would be swallowed as markup.
+                    super::message_media::ensure_html_body(&mut req);
+                    api::messages::reply_with_quote(&client, &chat_id, &quote, &req).await?
+                }
             } else {
                 let team_id = team.ok_or_else(|| {
                     TeamsError::InvalidInput(

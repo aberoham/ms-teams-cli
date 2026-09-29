@@ -379,6 +379,7 @@ teams message send --team <team-id> --channel <channel-id> --body "Hello"
 teams message send --chat <chat-id> --body "Hello"
 teams message send --team <team-id> --channel <channel-id> --body "<h1>Rich</h1>" --content-type html
 teams message send --chat <chat-id> --mention <user-id-or-upn> --body "Please review and send the drafts."
+teams message send --chat <chat-id> --quote <msg-id> --body "Yes, that works."
 teams message send --team <team-id> --channel <channel-id> --mention <user-id> --mention <user-id> --body "Deploy is going out now."
 teams message send --team <team-id> --channel <channel-id> --subject "Release plan" --body "Details inside."
 echo "Build passed" | teams message send --team <team-id> --channel <channel-id> --stdin
@@ -426,6 +427,14 @@ subject". Channel messages only: chat messages have no subject, so `--subject` w
 subject Graph stores, so a posted subject survives a read-back. Human message lists
 include a Subject column; plain lists include subjects even when the first message
 is untitled. JSON continues to omit the subject field when it is absent.
+
+`message send --chat CHAT_ID --quote MESSAGE_ID` sends a quote-reply, as the
+Teams client's Reply does in a chat: the quoted message renders as a card above
+the new text. It goes through Graph's `replyWithQuote` action, which builds the
+quote card and its preview itself. Repeat `--quote` to quote several messages
+of the same chat in one reply (Graph accepts up to 5). Mentions, inline images
+and attachments combine with it as on any other send. Chats only; channel
+messages use `message reply` threads instead.
 
 ```bash
 teams message send --chat <chat-id> \

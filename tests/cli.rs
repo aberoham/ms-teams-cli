@@ -747,6 +747,72 @@ fn message_send_rejects_subject_without_a_channel() {
 }
 
 #[test]
+fn message_send_rejects_quote_without_a_chat() {
+    teams()
+        .args([
+            "message",
+            "send",
+            "--team",
+            "team-1",
+            "--channel",
+            "19:channel@thread.tacv2",
+            "--quote",
+            "1790330813814",
+            "--body",
+            "hi",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--quote"));
+}
+
+/// `--quote` repeats to quote several chat messages in one reply; with
+/// credentials absent the command gets past parsing to the auth error.
+#[test]
+fn message_send_accepts_repeated_quotes_before_authentication() {
+    teams()
+        .args([
+            "message",
+            "send",
+            "--chat",
+            "19:chat@thread.v2",
+            "--quote",
+            "1790667379654",
+            "--quote",
+            "1790667031882",
+            "--body",
+            "hi",
+            "--output",
+            "json",
+        ])
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("auth login"));
+}
+
+#[test]
+fn message_send_rejects_quote_with_both_chat_and_channel_targets() {
+    teams()
+        .args([
+            "message",
+            "send",
+            "--chat",
+            "19:chat@thread.v2",
+            "--team",
+            "team-1",
+            "--channel",
+            "19:channel@thread.tacv2",
+            "--quote",
+            "1790330813814",
+            "--body",
+            "hi",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--quote"));
+}
+
+#[test]
 fn message_reply_help_advertises_repeatable_mention_flag() {
     teams()
         .args(["message", "reply", "--help"])
