@@ -2,6 +2,7 @@ use clap::Subcommand;
 use std::io::Read;
 use std::time::Instant;
 
+use crate::api::messages::MessageRef;
 use crate::api::{self, GraphClient, PaginationOpts};
 use crate::auth;
 use crate::config::ConfigFile;
@@ -236,14 +237,55 @@ pub enum MessageCommand {
         )]
         pinned_message: Option<String>,
     },
-    /// Delete a message
+    /// Delete your own message (a soft delete; undo it with `message undelete`)
+    #[command(
+        override_usage = "teams message delete (--team <TEAM> --channel <CHANNEL> [--reply <REPLY>] | --chat <CHAT>) (MESSAGE_ID | --message <MESSAGE>) --yes"
+    )]
     Delete {
-        /// Team ID
+        /// Team ID (for channel messages; requires --channel)
+        #[arg(long, requires = "channel", conflicts_with = "chat")]
+        team: Option<String>,
+        /// Channel ID (for channel messages; requires --team)
+        #[arg(long, requires = "team", conflicts_with = "chat")]
+        channel: Option<String>,
+        /// Chat ID (for chat messages)
+        #[arg(long, required_unless_present = "team")]
+        chat: Option<String>,
+        /// Reply ID, to target a reply in a channel thread (MESSAGE_ID is then the parent post)
+        #[arg(long, requires = "team", conflicts_with = "chat")]
+        reply: Option<String>,
+        /// Message ID
+        #[arg(required_unless_present = "message", conflicts_with = "message")]
+        message_id: Option<String>,
+        /// Message ID
+        #[arg(
+            long = "message",
+            alias = "message-id",
+            required_unless_present = "message_id",
+            conflicts_with = "message_id"
+        )]
+        message: Option<String>,
+        /// Confirm the deletion; without it the command exits with code 2 and sends nothing
         #[arg(long)]
-        team: String,
-        /// Channel ID
-        #[arg(long)]
-        channel: String,
+        yes: bool,
+    },
+    /// Restore a message removed with `message delete`
+    #[command(
+        override_usage = "teams message undelete (--team <TEAM> --channel <CHANNEL> [--reply <REPLY>] | --chat <CHAT>) (MESSAGE_ID | --message <MESSAGE>)"
+    )]
+    Undelete {
+        /// Team ID (for channel messages; requires --channel)
+        #[arg(long, requires = "channel", conflicts_with = "chat")]
+        team: Option<String>,
+        /// Channel ID (for channel messages; requires --team)
+        #[arg(long, requires = "team", conflicts_with = "chat")]
+        channel: Option<String>,
+        /// Chat ID (for chat messages)
+        #[arg(long, required_unless_present = "team")]
+        chat: Option<String>,
+        /// Reply ID, to target a reply in a channel thread (MESSAGE_ID is then the parent post)
+        #[arg(long, requires = "team", conflicts_with = "chat")]
+        reply: Option<String>,
         /// Message ID
         #[arg(required_unless_present = "message", conflicts_with = "message")]
         message_id: Option<String>,
@@ -294,6 +336,15 @@ pub async fn run(
     format: OutputFormat,
     pagination: &PaginationOpts,
 ) -> Result<()> {
+    // Deletion is refused before any token is resolved or request is made, so
+    // a missing confirmation is an invalid-input error (exit code 2) in the
+    // normal output envelope rather than an auth failure or a bare parse error.
+    if let MessageCommand::Delete { yes: false, .. } = &cmd {
+        return Err(TeamsError::InvalidInput(
+            "Deleting a message needs explicit confirmation: add --yes".into(),
+        ));
+    }
+
     let token = auth::resolve_token(profile).await?;
     let client = GraphClient::new(token, &config.network)?;
 
@@ -585,15 +636,45 @@ pub async fn run(
         MessageCommand::Delete {
             team,
             channel,
+            chat,
+            reply,
             message_id,
             message,
+            yes: _,
         } => {
             let start = Instant::now();
             auth::require_delegated_token(&client.token, "Deleting Teams messages")?;
             let message_id = resolve_id(message_id, message, "--message or <MESSAGE_ID>")?;
-            api::messages::delete_message(&client, &team, &channel, &message_id).await?;
-            let result = serde_json::json!({"status": "deleted"});
-            output::print_success(format, &result, start);
+            let target = resolve_message_ref(team, channel, chat, reply, message_id.clone())?;
+            api::messages::soft_delete_message(&client, &target)
+                .await
+                .map_err(|err| {
+                    with_channel_scope_hint(err, &target, client.token.scope.as_deref())
+                })?;
+            let msg = read_back(&client, &target, "deleted").await;
+            output::print_success(format, &msg, start);
+            Ok(())
+        }
+
+        MessageCommand::Undelete {
+            team,
+            channel,
+            chat,
+            reply,
+            message_id,
+            message,
+        } => {
+            let start = Instant::now();
+            auth::require_delegated_token(&client.token, "Restoring Teams messages")?;
+            let message_id = resolve_id(message_id, message, "--message or <MESSAGE_ID>")?;
+            let target = resolve_message_ref(team, channel, chat, reply, message_id.clone())?;
+            api::messages::undo_soft_delete_message(&client, &target)
+                .await
+                .map_err(|err| {
+                    with_channel_scope_hint(err, &target, client.token.scope.as_deref())
+                })?;
+            let msg = read_back(&client, &target, "restored").await;
+            output::print_success(format, &msg, start);
             Ok(())
         }
 
@@ -624,26 +705,76 @@ pub async fn run(
                 }
             };
             api::messages::update_message(&client, &target, &req).await?;
-            // Graph answers a delegated edit with no content, so the message is
-            // fetched back to show the new text. The edit has already been
-            // applied by this point, so a failed read-back is reported alongside
-            // a successful update rather than as a failed command.
-            let msg = match api::messages::get_message(&client, &target).await {
-                Ok(updated) => {
-                    serde_json::to_value(updated).map_err(|e| TeamsError::Other(e.into()))?
-                }
-                Err(err) => {
-                    tracing::warn!("Message updated, but reading it back failed: {err}");
-                    serde_json::json!({
-                        "id": message_id,
-                        "updated": true,
-                        "readBackError": err.to_string(),
-                    })
-                }
-            };
+            let msg = read_back(&client, &target, "updated").await;
             output::print_success(format, &msg, start);
             Ok(())
         }
+    }
+}
+
+/// Graph answers a delegated edit, delete or undelete with no content, so the
+/// message is fetched back to show its new state (the edited text, or
+/// `deletedDateTime` set or cleared). The mutation has already been applied by
+/// this point, so a failed read-back is reported alongside the successful
+/// change rather than as a failed command, with `outcome` naming the change.
+async fn read_back(client: &GraphClient, target: &MessageRef, outcome: &str) -> serde_json::Value {
+    read_back_at(client, &target.message_url(), target, outcome).await
+}
+
+async fn read_back_at(
+    client: &GraphClient,
+    url: &str,
+    target: &MessageRef,
+    outcome: &str,
+) -> serde_json::Value {
+    let fetched = api::messages::get_message_at(client, url)
+        .await
+        .and_then(|msg| serde_json::to_value(msg).map_err(|e| TeamsError::Other(e.into())));
+    match fetched {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::warn!("Message {outcome}, but reading it back failed: {err}");
+            let message_id = match target {
+                MessageRef::Channel { message_id, .. } | MessageRef::Chat { message_id, .. } => {
+                    message_id
+                }
+                MessageRef::ChannelReply { reply_id, .. } => reply_id,
+            };
+            serde_json::json!({
+                "id": message_id,
+                outcome: true,
+                "readBackError": err.to_string(),
+            })
+        }
+    }
+}
+
+/// Channel deletion needs a delegated scope the default login does not
+/// request, and Graph's 403 does not say so. Name the scope so the likely fix
+/// is obvious. The hint is skipped for chat targets, and when the token
+/// already carries the scope, since the 403 then has another cause (the
+/// message is someone else's, or tenant policy forbids it).
+fn with_channel_scope_hint(
+    err: TeamsError,
+    target: &MessageRef,
+    scope: Option<&str>,
+) -> TeamsError {
+    let is_channel = !matches!(target, MessageRef::Chat { .. });
+    let has_scope = scope.is_some_and(|scopes| {
+        scopes
+            .split_whitespace()
+            .any(|s| s.eq_ignore_ascii_case("ChannelMessage.ReadWrite"))
+    });
+    match err {
+        TeamsError::PermissionDenied(msg) if is_channel && !has_scope => {
+            TeamsError::PermissionDenied(format!(
+                "{msg} (channel messages likely need the ChannelMessage.ReadWrite delegated \
+                 scope, which requires admin consent: have an administrator grant it with \
+                 `teams auth consent-url --scopes ...`, then sign in again with \
+                 `teams auth login --scopes ...` including it)"
+            ))
+        }
+        other => other,
     }
 }
 
@@ -697,6 +828,47 @@ fn reaction_type_for(reaction: &str) -> String {
         .iter()
         .find(|(name, _)| *name == reaction)
         .map_or_else(|| reaction.to_string(), |(_, emoji)| (*emoji).to_string())
+}
+
+/// Turn the `--team`/`--channel`/`--chat`/`--reply` flags shared by the
+/// message commands into a [`MessageRef`], rejecting mixed or incomplete
+/// combinations clap's per-flag rules cannot express.
+pub(crate) fn resolve_message_ref(
+    team: Option<String>,
+    channel: Option<String>,
+    chat: Option<String>,
+    reply: Option<String>,
+    message_id: String,
+) -> Result<MessageRef> {
+    match (chat, team, channel) {
+        (Some(chat_id), None, None) => {
+            if reply.is_some() {
+                return Err(TeamsError::InvalidInput(
+                    "--reply only applies to channel messages".into(),
+                ));
+            }
+            Ok(MessageRef::Chat {
+                chat_id,
+                message_id,
+            })
+        }
+        (None, Some(team_id), Some(channel_id)) => Ok(match reply {
+            Some(reply_id) => MessageRef::ChannelReply {
+                team_id,
+                channel_id,
+                message_id,
+                reply_id,
+            },
+            None => MessageRef::Channel {
+                team_id,
+                channel_id,
+                message_id,
+            },
+        }),
+        _ => Err(TeamsError::InvalidInput(
+            "Provide either --chat, or both --team and --channel".into(),
+        )),
+    }
 }
 
 /// Unwraps the team/channel pair for the channel branch. Clap rejects an
@@ -1478,5 +1650,235 @@ mod tests {
     fn require_channel_reports_missing_team() {
         let err = require_channel(None, Some("channel".into())).unwrap_err();
         assert!(err.to_string().contains("--chat"), "{err}");
+    }
+
+    #[test]
+    fn resolve_message_ref_validates_target_combinations() {
+        assert!(matches!(
+            resolve_message_ref(None, None, Some("19:x".into()), None, "m".into()),
+            Ok(MessageRef::Chat { .. })
+        ));
+        assert!(matches!(
+            resolve_message_ref(
+                Some("t".into()),
+                Some("c".into()),
+                None,
+                Some("r".into()),
+                "m".into()
+            ),
+            Ok(MessageRef::ChannelReply { .. })
+        ));
+        assert!(resolve_message_ref(Some("t".into()), None, None, None, "m".into()).is_err());
+        assert!(resolve_message_ref(
+            None,
+            None,
+            Some("19:x".into()),
+            Some("r".into()),
+            "m".into()
+        )
+        .is_err());
+    }
+
+    mod read_back {
+        use super::*;
+        use crate::auth::token::TokenInfo;
+        use crate::config::NetworkConfig;
+        use reqwest::Client;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn test_client() -> GraphClient {
+            GraphClient {
+                http: Client::new(),
+                token: TokenInfo {
+                    access_token: "test-token".into(),
+                    expires_at: None,
+                    token_type: "Bearer".into(),
+                    scope: None,
+                    refresh_token: None,
+                    profile: "default".into(),
+                },
+                network: NetworkConfig {
+                    timeout: 30,
+                    max_retries: 0,
+                    retry_backoff_base: 2,
+                },
+            }
+        }
+
+        async fn server_returning(status: u16, body: serde_json::Value) -> MockServer {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/me/chats/chat-id/messages/message-id"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(body))
+                .expect(1)
+                .mount(&server)
+                .await;
+            server
+        }
+
+        #[tokio::test]
+        async fn failed_reply_read_back_reports_reply_id() {
+            for outcome in ["deleted", "restored"] {
+                let server = server_returning(
+                    404,
+                    serde_json::json!({
+                        "error": { "code": "NotFound", "message": "Message not found" }
+                    }),
+                )
+                .await;
+                let target = MessageRef::ChannelReply {
+                    team_id: "team".into(),
+                    channel_id: "channel".into(),
+                    message_id: "parent-id".into(),
+                    reply_id: "reply-id".into(),
+                };
+                let value = read_back_at(
+                    &test_client(),
+                    &format!("{}/me/chats/chat-id/messages/message-id", server.uri()),
+                    &target,
+                    outcome,
+                )
+                .await;
+                assert_eq!(value["id"], "reply-id");
+                assert_eq!(value[outcome], true);
+                assert!(value["readBackError"].is_string());
+            }
+        }
+
+        /// After a delete, Graph reports the message with `deletedDateTime`
+        /// set and the body blanked; that is what the command prints.
+        #[tokio::test]
+        async fn reports_deleted_date_time_after_delete() {
+            let server = server_returning(
+                200,
+                serde_json::json!({
+                    "id": "message-id",
+                    "deletedDateTime": "2026-08-20T20:33:53.378Z",
+                    "body": { "contentType": "text", "content": "" }
+                }),
+            )
+            .await;
+
+            let value = read_back_at(
+                &test_client(),
+                &format!("{}/me/chats/chat-id/messages/message-id", server.uri()),
+                &MessageRef::Chat {
+                    chat_id: "chat-id".into(),
+                    message_id: "message-id".into(),
+                },
+                "deleted",
+            )
+            .await;
+
+            assert_eq!(value["deletedDateTime"], "2026-08-20T20:33:53.378Z");
+            assert_eq!(value["body"]["content"], "");
+            assert!(value.get("deleted").is_none());
+        }
+
+        /// After an undelete, Graph omits `deletedDateTime` again and the
+        /// original text is back.
+        #[tokio::test]
+        async fn omits_deleted_date_time_after_restore() {
+            let server = server_returning(
+                200,
+                serde_json::json!({
+                    "id": "message-id",
+                    "deletedDateTime": null,
+                    "body": { "contentType": "text", "content": "hello again" }
+                }),
+            )
+            .await;
+
+            let value = read_back_at(
+                &test_client(),
+                &format!("{}/me/chats/chat-id/messages/message-id", server.uri()),
+                &MessageRef::Chat {
+                    chat_id: "chat-id".into(),
+                    message_id: "message-id".into(),
+                },
+                "restored",
+            )
+            .await;
+
+            assert!(value.get("deletedDateTime").is_none(), "{value}");
+            assert_eq!(value["body"]["content"], "hello again");
+        }
+
+        /// The mutation has already succeeded when the read-back runs, so a
+        /// failed read-back still reports success, naming the outcome and the
+        /// read error instead of the message.
+        #[tokio::test]
+        async fn failed_read_back_reports_the_outcome() {
+            let server = server_returning(
+                404,
+                serde_json::json!({
+                    "error": { "code": "NotFound", "message": "Message not found" }
+                }),
+            )
+            .await;
+
+            let value = read_back_at(
+                &test_client(),
+                &format!("{}/me/chats/chat-id/messages/message-id", server.uri()),
+                &MessageRef::Chat {
+                    chat_id: "chat-id".into(),
+                    message_id: "message-id".into(),
+                },
+                "deleted",
+            )
+            .await;
+
+            assert_eq!(value["id"], "message-id");
+            assert_eq!(value["deleted"], true);
+            assert!(
+                value["readBackError"]
+                    .as_str()
+                    .is_some_and(|e| e.contains("not found")),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn channel_scope_hint_applies_to_channel_targets_only() {
+        let channel = MessageRef::Channel {
+            team_id: "t".into(),
+            channel_id: "c".into(),
+            message_id: "m".into(),
+        };
+        let chat = MessageRef::Chat {
+            chat_id: "19:x".into(),
+            message_id: "m".into(),
+        };
+
+        let denied = || TeamsError::PermissionDenied("Forbidden".into());
+        let default_scopes = Some("Chat.ReadWrite ChannelMessage.Send User.Read");
+
+        let hinted = with_channel_scope_hint(denied(), &channel, default_scopes);
+        let text = hinted.to_string();
+        assert!(text.contains("ChannelMessage.ReadWrite"), "{text}");
+        assert!(text.contains("admin consent"), "{text}");
+        assert!(text.contains("teams auth consent-url"), "{text}");
+        assert_eq!(hinted.exit_code(), 4);
+
+        // No scope list to inspect (a pre-obtained token): still hint.
+        let hinted = with_channel_scope_hint(denied(), &channel, None);
+        assert!(hinted.to_string().contains("ChannelMessage.ReadWrite"));
+
+        // The token already has the scope, so the 403 has another cause.
+        let has_scope = Some("Chat.ReadWrite channelmessage.readwrite User.Read");
+        let untouched = with_channel_scope_hint(denied(), &channel, has_scope);
+        assert_eq!(untouched.to_string(), "Permission denied: Forbidden");
+
+        let untouched = with_channel_scope_hint(denied(), &chat, default_scopes);
+        assert_eq!(untouched.to_string(), "Permission denied: Forbidden");
+
+        let other = with_channel_scope_hint(
+            TeamsError::NotFound("gone".into()),
+            &channel,
+            default_scopes,
+        );
+        assert!(matches!(other, TeamsError::NotFound(_)), "{other:?}");
     }
 }
