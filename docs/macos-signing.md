@@ -33,10 +33,11 @@ have migrated. Do not re-sign these release binaries with a local certificate.
 
 `.github/workflows/mirror-upstream.yml` runs on weekday mornings from `next`,
 the default branch, or by hand with an upstream tag, and does nothing from any
-other branch. From osodevops/ms-teams-cli's recent stable releases it takes the
-oldest one not yet mirrored, so two releases between runs are both built. It
-stops for a person, rather than skipping or overwriting, when an
-`upstream-vX.Y.Z` release is a draft or lacks assets, when the tag exists
+other branch. From osodevops/ms-teams-cli's 20 most recent stable releases it
+takes the oldest one not yet mirrored, so two releases between runs are both
+built; an older omission needs a run by hand with its tag. It stops for a
+person, rather than skipping or overwriting, when an `upstream-vX.Y.Z` release
+is a draft or lacks any of its seven expected assets, when the tag exists
 without a release, when a lookup fails other than with 404, and when the
 upstream tag is not on upstream's `main`.
 

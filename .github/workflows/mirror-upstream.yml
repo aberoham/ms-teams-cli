@@ -75,13 +75,22 @@ jobs:
               echo missing
               return 0
             fi
-            local assets draft
-            draft="$(jq -r .draft <<<"$out")"
-            assets="$(jq -r --arg prefix "teams-${tag}-" \
-              '[.assets[].name | select(startswith($prefix) or . == "checksums-sha256.txt")] | length' <<<"$out")"
-            # Five archives, the source manifest and the checksums.
-            if [[ "$draft" != false || "$assets" -ne 7 ]]; then
-              echo "${release} is a draft or has ${assets} of 7 assets; finish or delete it" >&2
+            # Five archives, the source manifest and the checksums, each
+            # fully uploaded and not empty.
+            local expected missing
+            expected="$(printf '%s\n' \
+              "teams-${tag}-aarch64-apple-darwin.tar.gz" \
+              "teams-${tag}-x86_64-apple-darwin.tar.gz" \
+              "teams-${tag}-aarch64-unknown-linux-musl.tar.gz" \
+              "teams-${tag}-x86_64-unknown-linux-musl.tar.gz" \
+              "teams-${tag}-x86_64-pc-windows-msvc.zip" \
+              "teams-${tag}-source.txt" \
+              checksums-sha256.txt)"
+            missing="$(jq -r --arg expected "$expected" '
+              ($expected | split("\n")) - [.assets[] | select(.state == "uploaded" and .size > 0) | .name]
+              | join(" ")' <<<"$out")"
+            if [[ "$(jq -r .draft <<<"$out")" != false || -n "$missing" ]]; then
+              echo "${release} is a draft or lacks complete assets (${missing:-none missing}); finish or delete it" >&2
               return 1
             fi
             echo published
@@ -90,11 +99,15 @@ jobs:
           if [[ -n "$REQUESTED_TAG" ]]; then
             candidates=("$REQUESTED_TAG")
           else
-            # Oldest first, so two releases between runs are both mirrored.
-            mapfile -t candidates < <(gh release list --repo "$UPSTREAM" \
+            # Oldest first among upstream's 20 most recent stable releases, so
+            # two releases between runs are both mirrored. An older omission
+            # needs a run by hand with its tag. The list is captured in an
+            # assignment so that a failed lookup stops the run.
+            listed="$(gh release list --repo "$UPSTREAM" \
               --exclude-drafts --exclude-pre-releases --limit 20 \
               --json tagName,publishedAt \
-              --jq 'sort_by(.publishedAt) | .[].tagName')
+              --jq 'sort_by(.publishedAt) | .[].tagName')"
+            mapfile -t candidates <<<"$listed"
           fi
 
           tag=""
