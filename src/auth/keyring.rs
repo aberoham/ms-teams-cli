@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use super::token::TokenInfo;
 use crate::error::{Result, TeamsError};
 
-const SERVICE_NAME: &str = "teams-cli";
 const DISABLE_KEYRING_ENV: &str = "TEAMS_CLI_DISABLE_KEYRING";
 const TOKEN_STORE_ENV: &str = "TEAMS_CLI_TOKEN_STORE";
 
@@ -121,7 +120,7 @@ struct OsKeyring;
 
 impl OsKeyring {
     fn entry(key: &str) -> Result<::keyring::Entry> {
-        ::keyring::Entry::new(SERVICE_NAME, key)
+        ::keyring::Entry::new(crate::config::NAMESPACE, key)
             .map_err(|e| TeamsError::KeyringError(format!("Failed to create keyring entry: {e}")))
     }
 }
