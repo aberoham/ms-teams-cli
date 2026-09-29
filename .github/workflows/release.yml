@@ -3,16 +3,38 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # mirror-upstream.yml calls this to build an upstream release.
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Commit to build, the one upstream tagged
+        type: string
+        required: true
+      release_tag:
+        description: Tag of the release this run creates, upstream-vX.Y.Z
+        type: string
+        required: true
+      version_tag:
+        description: Upstream's tag, vX.Y.Z, which names the archives
+        type: string
+        required: true
 
+# A tag push builds the tagged commit and releases it under that tag. A call
+# from mirror-upstream.yml builds upstream's commit and releases it under an
+# upstream- tag, with archives named after upstream's version.
 env:
   CARGO_TERM_COLOR: always
+  SOURCE_REF: ${{ inputs.source_ref || github.sha }}
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+  VERSION_TAG: ${{ inputs.version_tag || github.ref_name }}
+  MIRROR: ${{ inputs.release_tag && 'true' || 'false' }}
 
 permissions:
   contents: read
 
-# Never cancel a release half way; a second push of the same tag waits.
+# Never cancel a release half way; a second run for the same tag waits.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.release_tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -23,25 +45,31 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ env.SOURCE_REF }}
 
-      # A fork may only publish prereleases. A plain vX.Y.Z tag on the fork
-      # would sort as upstream's stable release of the same number and be
-      # installed in its place.
+      # A fork publishes its own work only as prereleases: a plain vX.Y.Z tag
+      # on the fork would sort as upstream's stable release of the same number
+      # and be installed in its place. Upstream's stable releases are mirrored
+      # under upstream-vX.Y.Z instead, built from upstream's own commit.
       - name: Check tag against the package version
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
           UPSTREAM: ${{ github.repository == 'osodevops/ms-teams-cli' }}
         shell: bash
         run: |
           set -euo pipefail
           package_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
-          if [[ "$RELEASE_TAG" != "v${package_version}" ]]; then
-            echo "Tag ${RELEASE_TAG} does not match Cargo.toml version ${package_version}" >&2
+          if [[ "$VERSION_TAG" != "v${package_version}" ]]; then
+            echo "Tag ${VERSION_TAG} does not match Cargo.toml version ${package_version}" >&2
             exit 1
           fi
+          if [[ "$MIRROR" == true ]]; then
+            if [[ ! "$VERSION_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || "$RELEASE_TAG" != "upstream-${VERSION_TAG}" ]]; then
+              echo "A mirror publishes upstream-vX.Y.Z for upstream's vX.Y.Z; got ${RELEASE_TAG} for ${VERSION_TAG}" >&2
+              exit 1
+            fi
           # The personal tap accepts only these forms, which Homebrew and
           # RubyGems order identically.
-          if [[ "$UPSTREAM" != true && ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)\.[0-9]+$ ]]; then
+          elif [[ "$UPSTREAM" != true && ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)\.[0-9]+$ ]]; then
             echo "Forks publish only vX.Y.Z-alpha.N, -beta.N or -rc.N; got ${RELEASE_TAG}" >&2
             exit 1
           fi
@@ -49,13 +77,13 @@ jobs:
   ci:
     name: CI
     uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ inputs.source_ref }}
 
   build:
     name: Build ${{ matrix.target }}
     needs: [verify-tag, ci]
     runs-on: ${{ matrix.runner }}
-    env:
-      RELEASE_TAG: ${{ github.ref_name }}
     strategy:
       matrix:
         include:
@@ -79,6 +107,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ env.SOURCE_REF }}
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -104,7 +133,7 @@ jobs:
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'
         run: |
-          package="teams-${RELEASE_TAG}-${{ matrix.target }}"
+          package="teams-${VERSION_TAG}-${{ matrix.target }}"
           mkdir -p "dist/${package}/bin" "dist/${package}/share/doc" "dist/${package}/share/man/man1" "dist/${package}/share/man/man5" "dist/${package}/share/man/man7"
           cp "target/${{ matrix.target }}/release/teams" "dist/${package}/bin/teams"
           cp docs/man/teams.1 "dist/${package}/share/man/man1/teams.1"
@@ -120,7 +149,7 @@ jobs:
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          $package = "teams-$env:RELEASE_TAG-${{ matrix.target }}"
+          $package = "teams-$env:VERSION_TAG-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path "dist/$package/bin", "dist/$package/share/doc", "dist/$package/share/man/man1", "dist/$package/share/man/man5", "dist/$package/share/man/man7"
           Copy-Item "target/${{ matrix.target }}/release/teams.exe" "dist/$package/bin/teams.exe"
           Copy-Item "docs/man/teams.1" "dist/$package/share/man/man1/teams.1"
@@ -136,7 +165,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: teams-${{ matrix.target }}
-          path: teams-${{ github.ref_name }}-${{ matrix.target }}.*
+          path: teams-${{ env.VERSION_TAG }}-${{ matrix.target }}.*
 
   sign-macos:
     name: Sign macOS ${{ matrix.target }}
@@ -151,7 +180,6 @@ jobs:
       matrix:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
     env:
-      RELEASE_TAG: ${{ github.ref_name }}
       TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -175,7 +203,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          package="teams-${RELEASE_TAG}-${TARGET}"
+          package="teams-${VERSION_TAG}-${TARGET}"
           unpacked="$RUNNER_TEMP/signed-package"
           mkdir -p "$unpacked"
           tar xzf "${package}.tar.gz" -C "$unpacked"
@@ -185,7 +213,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: teams-${{ matrix.target }}
-          path: teams-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+          path: teams-${{ env.VERSION_TAG }}-${{ matrix.target }}.tar.gz
           if-no-files-found: error
           overwrite: true
       - name: Remove signing credentials
@@ -224,11 +252,16 @@ jobs:
         with:
           subject-checksums: artifacts/checksums-sha256.txt
 
+      # A mirror creates its upstream- tag here, on upstream's commit, and
+      # points at upstream's notes rather than generating its own.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ env.SOURCE_REF }}
+          generate_release_notes: ${{ env.MIRROR != 'true' }}
+          body: ${{ env.MIRROR == 'true' && format('Signed, notarized and attested build of [osodevops/ms-teams-cli {0}](https://github.com/osodevops/ms-teams-cli/releases/tag/{0}), from the same commit.', env.VERSION_TAG) || '' }}
+          prerelease: ${{ contains(env.VERSION_TAG, '-') }}
           files: |
             artifacts/teams-*
             artifacts/checksums-sha256.txt

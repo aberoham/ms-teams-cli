@@ -1,0 +1,105 @@
+name: Mirror upstream release
+
+# Builds each stable osodevops/ms-teams-cli release from upstream's own tagged
+# commit, and publishes it here as upstream-vX.Y.Z: signed and notarized for
+# macOS, with provenance attestations, for the tap's teams-cli formula. The
+# fork's own work ships separately as vX.Y.Z-alpha.N prereleases.
+#
+# Schedules run only from the default branch, which is next. Signing waits for
+# approval of the release environment, as a tag release does.
+
+on:
+  schedule:
+    # Weekdays, half an hour before the tap's teams updater.
+    - cron: "47 8 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Upstream tag to mirror, vX.Y.Z (default is upstream's latest release)
+        type: string
+        required: false
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: mirror-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: osodevops/ms-teams-cli
+
+jobs:
+  find:
+    name: Find an unmirrored upstream release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # fast-forward main so upstream's commit exists here
+    outputs:
+      build: ${{ steps.choose.outputs.build }}
+      source_ref: ${{ steps.choose.outputs.source_ref }}
+      release_tag: ${{ steps.choose.outputs.release_tag }}
+      version_tag: ${{ steps.choose.outputs.version_tag }}
+    steps:
+      - name: Choose the release
+        id: choose
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$REQUESTED_TAG" ]]; then
+            tag="$REQUESTED_TAG"
+          else
+            tag="$(gh release view --repo "$UPSTREAM" --json tagName --jq .tagName)"
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Only stable upstream releases are mirrored; got ${tag}" >&2
+            exit 1
+          fi
+          state="$(gh release view "$tag" --repo "$UPSTREAM" --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"')"
+          if [[ "$state" != "false false" ]]; then
+            echo "Upstream ${tag} is a draft or a prerelease (${state}); not mirroring it" >&2
+            exit 1
+          fi
+
+          release_tag="upstream-${tag}"
+          if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "${release_tag} is already published; nothing to do"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          sha="$(gh api "repos/${UPSTREAM}/commits/${tag}" --jq .sha)"
+          # The release tag must name a commit in this repository. main tracks
+          # upstream without changes of its own, so a fast-forward brings the
+          # tagged commit here; a release made off upstream's main line fails
+          # the check below instead.
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/merge-upstream" -f branch=main --jq .message
+          if [[ "$(gh api "repos/${GITHUB_REPOSITORY}/compare/${sha}...main" --jq .status)" != @(ahead|identical) ]]; then
+            echo "Upstream ${tag} (${sha}) is not on main after syncing; mirror it by hand" >&2
+            exit 1
+          fi
+
+          {
+            echo "build=true"
+            echo "source_ref=${sha}"
+            echo "release_tag=${release_tag}"
+            echo "version_tag=${tag}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Mirroring upstream ${tag} (${sha}) as ${release_tag}"
+
+  release:
+    name: Release
+    needs: find
+    if: needs.find.outputs.build == 'true'
+    permissions:
+      contents: write # create the release and upload its assets
+      id-token: write # sign the provenance attestation through Sigstore
+      attestations: write # store the attestation against the repository
+    uses: ./.github/workflows/release.yml
+    with:
+      source_ref: ${{ needs.find.outputs.source_ref }}
+      release_tag: ${{ needs.find.outputs.release_tag }}
+      version_tag: ${{ needs.find.outputs.version_tag }}

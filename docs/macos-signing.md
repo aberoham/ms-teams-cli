@@ -28,3 +28,28 @@ Keep the signing identifier stable across versions. Existing keychain items
 created by older signatures may require one approval or a new sign-in. A
 successful release signature does not prove that existing keychain grants
 have migrated. Do not re-sign these release binaries with a local certificate.
+
+## Mirrored upstream releases
+
+`.github/workflows/mirror-upstream.yml` runs on weekday mornings from `next`,
+the default branch, or by hand with an upstream tag. It picks
+osodevops/ms-teams-cli's latest stable release, skips it if
+`upstream-vX.Y.Z` is already published, fast-forwards `main` from upstream so
+the tagged commit exists here, and calls `release.yml` with that commit. The
+build, CI, signing, notarization and attestation are the same jobs a tag
+release runs, applied to upstream's unmodified source; only the workflow and
+signing script come from `next`. The release is published as
+`upstream-vX.Y.Z`, with archives named `teams-vX.Y.Z-<target>`, and is what
+the tap's `teams-cli` formula installs. Fork prereleases stay under
+`vX.Y.Z-alpha.N` for `teams-cli-next`.
+
+Because a mirror run deploys from the `next` branch rather than a tag, the
+`release` environment's deployment policy allows `next` as well as the
+prerelease tag patterns. The required reviewer still approves every signing
+run.
+
+Anyone can check where an archive came from:
+
+```bash
+gh attestation verify teams-v0.8.0-aarch64-apple-darwin.tar.gz --repo aberoham/ms-teams-cli
+```
