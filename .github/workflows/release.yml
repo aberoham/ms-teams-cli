@@ -6,6 +6,10 @@ on:
   # mirror-upstream.yml calls this to build an upstream release.
   workflow_call:
     inputs:
+      source_repository:
+        description: Repository whose source is built, osodevops/ms-teams-cli
+        type: string
+        required: true
       source_ref:
         description: Commit to build, the one upstream tagged
         type: string
@@ -20,10 +24,15 @@ on:
         required: true
 
 # A tag push builds the tagged commit and releases it under that tag. A call
-# from mirror-upstream.yml builds upstream's commit and releases it under an
-# upstream- tag, with archives named after upstream's version.
+# from mirror-upstream.yml checks out upstream's commit from upstream's own
+# repository, builds it, and releases it here under an upstream- tag, with
+# archives named after upstream's version. That tag goes on this workflow's
+# commit, not upstream's: the fork never holds upstream's workflow files as a
+# tag target, and the attested source manifest records which upstream commit
+# was built.
 env:
   CARGO_TERM_COLOR: always
+  SOURCE_REPOSITORY: ${{ inputs.source_repository || github.repository }}
   SOURCE_REF: ${{ inputs.source_ref || github.sha }}
   RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
   VERSION_TAG: ${{ inputs.version_tag || github.ref_name }}
@@ -32,7 +41,8 @@ env:
 permissions:
   contents: read
 
-# Never cancel a release half way; a second run for the same tag waits.
+# Never cancel a release half way. A second run for the same tag waits;
+# GitHub keeps only the newest waiting run.
 concurrency:
   group: release-${{ inputs.release_tag || github.ref }}
   cancel-in-progress: false
@@ -45,14 +55,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          repository: ${{ env.SOURCE_REPOSITORY }}
           ref: ${{ env.SOURCE_REF }}
 
       # A fork publishes its own work only as prereleases: a plain vX.Y.Z tag
       # on the fork would sort as upstream's stable release of the same number
       # and be installed in its place. Upstream's stable releases are mirrored
-      # under upstream-vX.Y.Z instead, built from upstream's own commit.
+      # under upstream-vX.Y.Z instead, and only from next's own workflow, only
+      # from upstream's repository, and only for the exact commit upstream
+      # tagged, whoever the caller is.
       - name: Check tag against the package version
         env:
+          GH_TOKEN: ${{ github.token }}
           UPSTREAM: ${{ github.repository == 'osodevops/ms-teams-cli' }}
         shell: bash
         run: |
@@ -67,6 +81,15 @@ jobs:
               echo "A mirror publishes upstream-vX.Y.Z for upstream's vX.Y.Z; got ${RELEASE_TAG} for ${VERSION_TAG}" >&2
               exit 1
             fi
+            if [[ "$GITHUB_REF" != refs/heads/next || "$SOURCE_REPOSITORY" != osodevops/ms-teams-cli ]]; then
+              echo "A mirror runs only from next and builds only osodevops/ms-teams-cli; got ${GITHUB_REF} building ${SOURCE_REPOSITORY}" >&2
+              exit 1
+            fi
+            tagged="$(gh api "repos/${SOURCE_REPOSITORY}/commits/${VERSION_TAG}" --jq .sha)"
+            if [[ "$tagged" != "$SOURCE_REF" ]]; then
+              echo "Upstream ${VERSION_TAG} is ${tagged}, not ${SOURCE_REF}" >&2
+              exit 1
+            fi
           # The personal tap accepts only these forms, which Homebrew and
           # RubyGems order identically.
           elif [[ "$UPSTREAM" != true && ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)\.[0-9]+$ ]]; then
@@ -78,6 +101,7 @@ jobs:
     name: CI
     uses: ./.github/workflows/ci.yml
     with:
+      repository: ${{ inputs.source_repository }}
       ref: ${{ inputs.source_ref }}
 
   build:
@@ -107,6 +131,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          repository: ${{ env.SOURCE_REPOSITORY }}
           ref: ${{ env.SOURCE_REF }}
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -124,11 +149,11 @@ jobs:
 
       - name: Build (cross)
         if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }}
+        run: cross build --release --locked --target ${{ matrix.target }}
 
       - name: Build (native)
         if: "!matrix.cross"
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'
@@ -239,6 +264,24 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # The provenance attestation names this workflow's repository and
+      # commit, which for a mirror are the fork's, not upstream's. The source
+      # manifest records what was built, and is attested with the archives.
+      - name: Write the source manifest
+        if: env.MIRROR == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "source_repository=${SOURCE_REPOSITORY}"
+            echo "source_tag=${VERSION_TAG}"
+            echo "source_commit=${SOURCE_REF}"
+            echo "workflow_repository=${GITHUB_REPOSITORY}"
+            echo "workflow_commit=${GITHUB_SHA}"
+            echo "workflow_run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > "artifacts/teams-${VERSION_TAG}-source.txt"
+          cat "artifacts/teams-${VERSION_TAG}-source.txt"
+
       - name: Generate checksums
         run: |
           cd artifacts
@@ -252,15 +295,34 @@ jobs:
         with:
           subject-checksums: artifacts/checksums-sha256.txt
 
-      # A mirror creates its upstream- tag here, on upstream's commit, and
-      # points at upstream's notes rather than generating its own.
+      # softprops/action-gh-release ignores target_commitish when the tag
+      # already exists, so a mirror refuses a tag it did not expect.
+      - name: Refuse an existing mirror tag
+        if: env.MIRROR == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if out="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" 2>&1)"; then
+            echo "${RELEASE_TAG} already exists here; delete it or its release before mirroring again" >&2
+            exit 1
+          elif ! grep -q 'HTTP 404' <<<"$out"; then
+            echo "Could not check for ${RELEASE_TAG}: ${out}" >&2
+            exit 1
+          fi
+
+      # A mirror creates its upstream- tag on this workflow's commit, whose
+      # workflow files the fork already has, and points at upstream's notes
+      # rather than generating its own. A tag push's tag already exists, so
+      # target_commitish does not apply to it.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          target_commitish: ${{ env.SOURCE_REF }}
+          target_commitish: ${{ github.sha }}
           generate_release_notes: ${{ env.MIRROR != 'true' }}
-          body: ${{ env.MIRROR == 'true' && format('Signed, notarized and attested build of [osodevops/ms-teams-cli {0}](https://github.com/osodevops/ms-teams-cli/releases/tag/{0}), from the same commit.', env.VERSION_TAG) || '' }}
+          body: ${{ env.MIRROR == 'true' && format('Signed, notarized and attested build of [osodevops/ms-teams-cli {0}](https://github.com/osodevops/ms-teams-cli/releases/tag/{0}), commit {1}. The tag marks the fork workflow commit that built it; teams-{0}-source.txt, attested with the archives, records the source.', env.VERSION_TAG, env.SOURCE_REF) || '' }}
           prerelease: ${{ contains(env.VERSION_TAG, '-') }}
           files: |
             artifacts/teams-*

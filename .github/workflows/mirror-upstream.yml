@@ -1,21 +1,23 @@
 name: Mirror upstream release
 
 # Builds each stable osodevops/ms-teams-cli release from upstream's own tagged
-# commit, and publishes it here as upstream-vX.Y.Z: signed and notarized for
-# macOS, with provenance attestations, for the tap's teams-cli formula. The
-# fork's own work ships separately as vX.Y.Z-alpha.N prereleases.
+# commit, checked out from upstream's repository, and publishes it here as
+# upstream-vX.Y.Z: signed and notarized for macOS, with provenance
+# attestations and an attested source manifest, for the tap's teams-cli
+# formula. The fork's own work ships separately as vX.Y.Z-alpha.N.
 #
-# Schedules run only from the default branch, which is next. Signing waits for
-# approval of the release environment, as a tag release does.
+# Schedules run only from the default branch, which is next, and release.yml
+# refuses a mirror from anywhere else. Signing waits for approval of the
+# release environment, as a tag release does.
 
 on:
   schedule:
-    # Weekdays, half an hour before the tap's teams updater.
+    # Weekdays, half an hour before the tap's teams-cli updater.
     - cron: "47 8 * * 1-5"
   workflow_dispatch:
     inputs:
       tag:
-        description: Upstream tag to mirror, vX.Y.Z (default is upstream's latest release)
+        description: Upstream tag to mirror, vX.Y.Z (default is the oldest unmirrored recent release)
         type: string
         required: false
         default: ""
@@ -32,9 +34,10 @@ env:
 jobs:
   find:
     name: Find an unmirrored upstream release
+    if: github.ref == 'refs/heads/next'
     runs-on: ubuntu-latest
     permissions:
-      contents: write # fast-forward main so upstream's commit exists here
+      contents: read
     outputs:
       build: ${{ steps.choose.outputs.build }}
       source_ref: ${{ steps.choose.outputs.source_ref }}
@@ -49,46 +52,90 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          # Prints "missing" or "published" for this repository's mirror of
+          # an upstream tag. Anything else, including a lookup that fails for
+          # a reason other than 404, a draft, a release without all its
+          # assets, or a tag without a release, stops the run for a person to
+          # look at rather than being skipped or overwritten.
+          mirror_state() {
+            local tag="$1" release="upstream-$1" out
+            if ! out="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${release}" 2>&1)"; then
+              if ! grep -q 'HTTP 404' <<<"$out"; then
+                echo "Could not look up ${release}: ${out}" >&2
+                return 1
+              fi
+              if out="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${release}" 2>&1)"; then
+                echo "Tag ${release} exists without a release; delete it and run again" >&2
+                return 1
+              elif ! grep -q 'HTTP 404' <<<"$out"; then
+                echo "Could not look up tag ${release}: ${out}" >&2
+                return 1
+              fi
+              echo missing
+              return 0
+            fi
+            local assets draft
+            draft="$(jq -r .draft <<<"$out")"
+            assets="$(jq -r --arg prefix "teams-${tag}-" \
+              '[.assets[].name | select(startswith($prefix) or . == "checksums-sha256.txt")] | length' <<<"$out")"
+            # Five archives, the source manifest and the checksums.
+            if [[ "$draft" != false || "$assets" -ne 7 ]]; then
+              echo "${release} is a draft or has ${assets} of 7 assets; finish or delete it" >&2
+              return 1
+            fi
+            echo published
+          }
+
           if [[ -n "$REQUESTED_TAG" ]]; then
-            tag="$REQUESTED_TAG"
+            candidates=("$REQUESTED_TAG")
           else
-            tag="$(gh release view --repo "$UPSTREAM" --json tagName --jq .tagName)"
+            # Oldest first, so two releases between runs are both mirrored.
+            mapfile -t candidates < <(gh release list --repo "$UPSTREAM" \
+              --exclude-drafts --exclude-pre-releases --limit 20 \
+              --json tagName,publishedAt \
+              --jq 'sort_by(.publishedAt) | .[].tagName')
           fi
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Only stable upstream releases are mirrored; got ${tag}" >&2
+
+          tag=""
+          for candidate in "${candidates[@]}"; do
+            [[ "$candidate" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+            state="$(mirror_state "$candidate")"
+            if [[ "$state" == missing ]]; then
+              tag="$candidate"
+              break
+            fi
+          done
+          if [[ -n "$REQUESTED_TAG" && -z "$tag" ]]; then
+            echo "Upstream ${REQUESTED_TAG} is not a stable tag, or is already mirrored" >&2
             exit 1
           fi
+          if [[ -z "$tag" ]]; then
+            echo "Every recent stable upstream release is mirrored; nothing to do"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           state="$(gh release view "$tag" --repo "$UPSTREAM" --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"')"
           if [[ "$state" != "false false" ]]; then
             echo "Upstream ${tag} is a draft or a prerelease (${state}); not mirroring it" >&2
             exit 1
           fi
-
-          release_tag="upstream-${tag}"
-          if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "${release_tag} is already published; nothing to do"
-            echo "build=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
           sha="$(gh api "repos/${UPSTREAM}/commits/${tag}" --jq .sha)"
-          # The release tag must name a commit in this repository. main tracks
-          # upstream without changes of its own, so a fast-forward brings the
-          # tagged commit here; a release made off upstream's main line fails
-          # the check below instead.
-          gh api -X POST "repos/${GITHUB_REPOSITORY}/merge-upstream" -f branch=main --jq .message
-          if [[ "$(gh api "repos/${GITHUB_REPOSITORY}/compare/${sha}...main" --jq .status)" != @(ahead|identical) ]]; then
-            echo "Upstream ${tag} (${sha}) is not on main after syncing; mirror it by hand" >&2
+          # Upstream releases from its main line; a tag made elsewhere is left
+          # for a person to judge.
+          if [[ "$(gh api "repos/${UPSTREAM}/compare/${sha}...main" --jq .status)" != @(ahead|identical) ]]; then
+            echo "Upstream ${tag} (${sha}) is not on upstream's main; mirror it by hand if intended" >&2
             exit 1
           fi
 
           {
             echo "build=true"
             echo "source_ref=${sha}"
-            echo "release_tag=${release_tag}"
+            echo "release_tag=upstream-${tag}"
             echo "version_tag=${tag}"
           } >> "$GITHUB_OUTPUT"
-          echo "Mirroring upstream ${tag} (${sha}) as ${release_tag}"
+          echo "Mirroring upstream ${tag} (${sha}) as upstream-${tag}"
 
   release:
     name: Release
@@ -100,6 +147,7 @@ jobs:
       attestations: write # store the attestation against the repository
     uses: ./.github/workflows/release.yml
     with:
+      source_repository: osodevops/ms-teams-cli
       source_ref: ${{ needs.find.outputs.source_ref }}
       release_tag: ${{ needs.find.outputs.release_tag }}
       version_tag: ${{ needs.find.outputs.version_tag }}
