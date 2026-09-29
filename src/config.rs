@@ -322,6 +322,75 @@ pub fn resolve_delegated_tenant_id(
         .unwrap_or_else(|| DEFAULT_DELEGATED_TENANT_ID.to_string())
 }
 
+/// Where login found the ID it signs in with, for the notice it prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdSource {
+    /// `--client-id`/`--tenant-id`, or the matching environment variable.
+    Given,
+    /// The profile's saved `client_id`/`tenant_id`.
+    Profile,
+    /// The built-in public application or the `organizations` tenant.
+    BuiltIn,
+}
+
+impl IdSource {
+    pub fn of(given: Option<&str>, saved: Option<&str>) -> Self {
+        if given.is_some() {
+            IdSource::Given
+        } else if saved.is_some() {
+            IdSource::Profile
+        } else {
+            IdSource::BuiltIn
+        }
+    }
+
+    pub fn describe(self, profile: &str) -> String {
+        match self {
+            IdSource::Given => "given".to_string(),
+            IdSource::Profile => format!("saved in profile '{profile}'"),
+            IdSource::BuiltIn => "built-in default".to_string(),
+        }
+    }
+}
+
+/// Save the client and tenant IDs that a successful login was given, by flag
+/// or environment variable, to the profile's section of the config file, so
+/// that the next `auth login` for the profile signs in through the same
+/// application registration without being told again. Blank values are
+/// ignored. Returns the updated config, or `None` when the profile already
+/// holds these values.
+pub fn remember_registration(
+    config: &ConfigFile,
+    profile: &str,
+    client_id: Option<&str>,
+    tenant_id: Option<&str>,
+) -> Option<ConfigFile> {
+    let non_blank = |value: Option<&str>| {
+        value
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    let client_id = non_blank(client_id);
+    let tenant_id = non_blank(tenant_id);
+
+    let saved = config.profiles.get(profile).cloned().unwrap_or_default();
+    let mut updated = saved.clone();
+    if client_id.is_some() {
+        updated.client_id = client_id;
+    }
+    if tenant_id.is_some() {
+        updated.tenant_id = tenant_id;
+    }
+    if updated.client_id == saved.client_id && updated.tenant_id == saved.tenant_id {
+        return None;
+    }
+
+    let mut config = config.clone();
+    config.profiles.insert(profile.to_string(), updated);
+    Some(config)
+}
+
 /// Append `offline_access` to a delegated scope string when it is missing, so
 /// the identity platform always issues a refresh token.
 pub fn ensure_offline_access(scopes: &str) -> String {
@@ -773,6 +842,104 @@ scopes = "User.Read People.Read offline_access"
         assert_eq!(
             version_line("1.2.3", "teams-cli-dev"),
             "1.2.3 (storage namespace teams-cli-dev)"
+        );
+    }
+
+    fn profile_with(client_id: Option<&str>, tenant_id: Option<&str>) -> ProfileConfig {
+        ProfileConfig {
+            client_id: client_id.map(str::to_string),
+            tenant_id: tenant_id.map(str::to_string),
+            ..ProfileConfig::default()
+        }
+    }
+
+    #[test]
+    fn remember_registration_creates_the_profile_section() {
+        let config = ConfigFile::default();
+        let updated =
+            remember_registration(&config, "benbot", Some("app-1"), Some("tenant-1")).unwrap();
+        let profile = &updated.profiles["benbot"];
+        assert_eq!(profile.client_id.as_deref(), Some("app-1"));
+        assert_eq!(profile.tenant_id.as_deref(), Some("tenant-1"));
+    }
+
+    #[test]
+    fn remember_registration_keeps_the_profile_s_other_settings() {
+        let mut config = ConfigFile::default();
+        let mut profile = profile_with(Some("old-app"), Some("tenant-1"));
+        profile.scopes = Some("User.Read".into());
+        profile.auth_app = Some("byo".into());
+        config.profiles.insert("work".into(), profile);
+
+        let updated = remember_registration(&config, "work", Some("new-app"), None).unwrap();
+        let profile = &updated.profiles["work"];
+        assert_eq!(profile.client_id.as_deref(), Some("new-app"));
+        assert_eq!(profile.tenant_id.as_deref(), Some("tenant-1"));
+        assert_eq!(profile.scopes.as_deref(), Some("User.Read"));
+        assert_eq!(profile.auth_app.as_deref(), Some("byo"));
+    }
+
+    #[test]
+    fn remember_registration_saves_nothing_when_nothing_changes() {
+        let mut config = ConfigFile::default();
+        config
+            .profiles
+            .insert("work".into(), profile_with(Some("app-1"), Some("tenant-1")));
+        assert!(remember_registration(&config, "work", Some("app-1"), Some("tenant-1")).is_none());
+        assert!(remember_registration(&config, "work", None, None).is_none());
+        assert!(remember_registration(&ConfigFile::default(), "new", None, None).is_none());
+    }
+
+    #[test]
+    fn remember_registration_ignores_blank_values() {
+        let mut config = ConfigFile::default();
+        config
+            .profiles
+            .insert("work".into(), profile_with(Some("app-1"), Some("tenant-1")));
+        assert!(remember_registration(&config, "work", Some("  "), Some("")).is_none());
+        let updated = remember_registration(&config, "work", Some(" app-2 "), Some(" ")).unwrap();
+        assert_eq!(updated.profiles["work"].client_id.as_deref(), Some("app-2"));
+        assert_eq!(
+            updated.profiles["work"].tenant_id.as_deref(),
+            Some("tenant-1")
+        );
+    }
+
+    /// The saved IDs are what the next login resolves when it is given none,
+    /// including for a profile that requires its own application.
+    #[test]
+    fn a_remembered_registration_is_used_by_the_next_login() {
+        let mut config = ConfigFile::default();
+        let locked = ProfileConfig {
+            auth_app: Some("byo".into()),
+            ..ProfileConfig::default()
+        };
+        config.profiles.insert("work".into(), locked);
+        let config =
+            remember_registration(&config, "work", Some("app-1"), Some("tenant-1")).unwrap();
+
+        assert_eq!(
+            resolve_delegated_client_id(None, "work", &config).unwrap(),
+            "app-1"
+        );
+        assert_eq!(
+            resolve_delegated_tenant_id(None, "work", &config),
+            "tenant-1"
+        );
+        assert_eq!(
+            resolve_delegated_client_id(Some("app-2"), "work", &config).unwrap(),
+            "app-2"
+        );
+    }
+
+    #[test]
+    fn id_source_prefers_given_then_saved_then_built_in() {
+        assert_eq!(IdSource::of(Some("a"), Some("b")), IdSource::Given);
+        assert_eq!(IdSource::of(None, Some("b")), IdSource::Profile);
+        assert_eq!(IdSource::of(None, None), IdSource::BuiltIn);
+        assert_eq!(
+            IdSource::Profile.describe("work"),
+            "saved in profile 'work'"
         );
     }
 }
