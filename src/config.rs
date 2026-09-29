@@ -397,18 +397,33 @@ pub fn remember_registration(
         let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) else {
             continue;
         };
-        if section.get(key).and_then(toml_edit::Item::as_str) != Some(value) {
-            section.insert(key, toml_edit::value(value));
-            changed = true;
+        if section.get(key).and_then(toml_edit::Item::as_str) == Some(value) {
+            continue;
         }
+        // An existing value keeps its surrounding whitespace and trailing
+        // comment; only the string itself changes.
+        match section.get_mut(key).and_then(toml_edit::Item::as_value_mut) {
+            Some(existing) => {
+                let decor = existing.decor().clone();
+                *existing = toml_edit::Value::from(value);
+                *existing.decor_mut() = decor;
+            }
+            None => {
+                section.insert(key, toml_edit::value(value));
+            }
+        }
+        changed = true;
     }
     Ok(changed.then(|| document.to_string()))
 }
 
 /// Replace the config file with `text`: written `0600` to a temporary file in
 /// the same directory and renamed over the original, so a failed write never
-/// leaves a truncated config behind.
+/// leaves a truncated config behind. A symlinked config file is written
+/// through the link, so the link survives.
 pub fn write_config_text(path: &std::path::Path, text: &str) -> Result<()> {
+    let resolved = fs::canonicalize(path).ok();
+    let path = resolved.as_deref().unwrap_or(path);
     let fail = |e: std::io::Error| {
         TeamsError::ConfigError(format!("Failed to write config to {}: {e}", path.display()))
     };
@@ -938,6 +953,30 @@ client_id = \"other-app\"
     }
 
     #[test]
+    fn remember_registration_keeps_a_replaced_value_s_comment_and_spacing() {
+        let original = "[profiles.work]\nclient_id  =  \"old-app\"   # customer app\n";
+        let text = remember(original, "work", Some("new-app"), None);
+        assert_eq!(
+            text,
+            "[profiles.work]\nclient_id  =  \"new-app\"   # customer app\n"
+        );
+    }
+
+    #[test]
+    fn remember_registration_edits_dotted_and_inline_profiles() {
+        let dotted = "profiles.work.client_id = \"old-app\"\n";
+        assert_eq!(
+            remember(dotted, "work", Some("new-app"), None),
+            "profiles.work.client_id = \"new-app\"\n"
+        );
+        let inline = "[profiles]\nwork = { client_id = \"old-app\" }\n";
+        assert_eq!(
+            remember(inline, "work", Some("new-app"), None),
+            "[profiles]\nwork = { client_id = \"new-app\" }\n"
+        );
+    }
+
+    #[test]
     fn remember_registration_adds_a_profile_beside_existing_ones() {
         let original = "[profiles.work]\nclient_id = \"app-1\"\n";
         let text = remember(original, "benbot", Some("app-2"), None);
@@ -1022,6 +1061,25 @@ client_id = \"other-app\"
             let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
+    }
+
+    /// A config file kept elsewhere, such as in a dotfiles repository, and
+    /// linked into place stays linked; the edit lands in the target.
+    #[cfg(unix)]
+    #[test]
+    fn write_config_text_writes_through_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("dotfiles-config.toml");
+        let link = dir.path().join("config.toml");
+        fs::write(&target, "a = 1\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_config_text(&link, "a = 2\n").unwrap();
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "a = 2\n");
     }
 
     #[test]
