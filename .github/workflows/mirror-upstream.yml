@@ -159,6 +159,12 @@ jobs:
       id-token: write # sign the provenance attestation through Sigstore
       attestations: write # store the attestation against the repository
     uses: ./.github/workflows/release.yml
+    # A called workflow sees an environment's secrets only for names the
+    # caller passes down; the release environment then supplies the values.
+    # Without this, signing in release.yml found MACOS_CERTIFICATE_P12_BASE64
+    # empty. The repository holds no repository-level secrets, so nothing
+    # else is exposed.
+    secrets: inherit # zizmor: ignore[secrets-inherit] environment secrets need it; see above
     with:
       source_repository: osodevops/ms-teams-cli
       source_ref: ${{ needs.find.outputs.source_ref }}
