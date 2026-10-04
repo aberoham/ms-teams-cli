@@ -68,7 +68,7 @@ Credential resolution is intentionally predictable:
 - Client secret: CLI flag, then `TEAMS_CLI_CLIENT_SECRET`.
 - Access token for normal commands: `TEAMS_CLI_ACCESS_TOKEN`, then OS keyring token for the selected profile.
 
-Config lives under the platform config directory in `teams-cli/config.toml`, unless `--config` is provided. Config profiles are resolved by `config::resolve_profile`; `--profile` overrides the configured default profile.
+Config lives under the platform config directory in `<namespace>/config.toml`, unless `--config` is provided. The namespace (`config::NAMESPACE`) is fixed at compile time: `teams-cli` for release builds, `teams-cli-dev` for debug builds, or the value of `TEAMS_CLI_BUILD_NAMESPACE` at build time. It also names the keyring service, so by default a debug build does not touch an installed release's tokens. A build override of `teams-cli` shares release token storage, and `--config` can select the release config file; `teams config path` reports it. Config profiles are resolved by `config::resolve_profile`; `--profile` overrides the configured default profile.
 
 Auth flows:
 
@@ -178,7 +178,7 @@ CI runs on GitHub Actions:
 - Microsoft Graph permissions differ by tenant and auth type. A compile-time pass does not prove a command is usable with every auth flow.
 - Webhook subscriptions require an HTTPS public endpoint; `teams listen` only runs the local HTTP listener.
 - Most tests do not hit Microsoft Graph. Add mocked tests for API behavior instead of requiring live credentials.
-- macOS binds keychain access grants to the exact binary signature, so every local build is a "new" application and triggers a fresh keychain prompt when it touches stored tokens. Set `TEAMS_CLI_DISABLE_KEYRING=1` in tests (the CLI test harness already does), and see the macOS keychain section in `docs/troubleshooting.md` for the local re-signing workaround. For an unattended process, `TEAMS_CLI_TOKEN_STORE=file` keeps tokens in `0600` files under the config directory instead, with no keychain involved.
+- macOS binds keychain access grants to the exact binary signature, so every local build is a "new" application and triggers a fresh keychain prompt when it touches stored tokens. Set `TEAMS_CLI_DISABLE_KEYRING=1` in tests (the CLI test harness already does), and note that debug builds use the separate `teams-cli-dev` storage namespace, so they never touch an installed release's items, though each rebuild is still prompted for its own (re-signing with a self-signed certificate does not help; see the macOS keychain section in `docs/troubleshooting.md`). For an unattended process, `TEAMS_CLI_TOKEN_STORE=file` keeps tokens in `0600` files under the config directory instead, with no keychain involved.
 - Keep global option names reserved. In particular, command-specific file paths must not reuse global `--output`, which is the JSON/human/plain output selector.
 - Keep `README.md`, `docs/man/teams.1`, and CLI help in sync. If a documented flag form exists in README, add a CLI regression test for it.
 - When verifying whether a PR is good to merge, check whether it is intended to release. Release automation is version-bump driven: a feature PR without a `Cargo.toml` package version change only runs CI on `main`; a release needs `Cargo.toml` and the root `teams-cli` entry in `Cargo.lock` bumped together, plus a matching `CHANGELOG.md` entry.

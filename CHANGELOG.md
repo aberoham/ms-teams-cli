@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- `teams --version` names the storage namespace of any build that does not use the release namespace `teams-cli`, and `teams config path` reports `namespace` in every build.
+
+### Changed
+
+- Debug builds from source keep their tokens under the keyring service `teams-cli-dev` and their config in a `teams-cli-dev` directory, so by default they no longer read or rewrite an installed release's keychain items or config file. Release builds keep `teams-cli`, and existing installs need no action. `TEAMS_CLI_BUILD_NAMESPACE`, set at compile time, chooses another namespace. A developer who signed in with a debug build before this change signs in once more, and a command that finds no token in such a build names the namespace it looked in.
+
 ### Fixed
 
 - `teams auth login --help` no longer prints the value of `TEAMS_CLI_CLIENT_SECRET` when it is set. The help still names the variable, and now recommends it over `--client-secret`, whose value shows in process listings and shell history.
