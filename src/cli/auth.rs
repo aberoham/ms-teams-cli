@@ -22,7 +22,8 @@ pub enum AuthCommand {
         #[arg(long, env = "TEAMS_CLI_CLIENT_ID")]
         client_id: Option<String>,
 
-        /// Azure AD client secret
+        /// Azure AD client secret. Prefer the environment variable: a value
+        /// passed as a flag shows in process listings and shell history
         #[arg(long, env = "TEAMS_CLI_CLIENT_SECRET", hide_env_values = true)]
         client_secret: Option<String>,
 

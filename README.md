@@ -217,7 +217,8 @@ teams auth login --client-credentials
 export TEAMS_CLI_ACCESS_TOKEN=<access-token>
 teams team list  # no login step needed
 
-# Explicit flags
+# Explicit flags. A secret passed this way shows in process listings and
+# shell history, so prefer TEAMS_CLI_CLIENT_SECRET outside a throwaway shell
 teams auth login --client-credentials \
   --client-id <client-id> --client-secret <client-secret> --tenant-id <tenant-id>
 ```
