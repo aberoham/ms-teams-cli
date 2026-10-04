@@ -17,18 +17,19 @@ pub struct LoginArgs {
     device_code: bool,
 
     /// Azure AD application (client) ID. Saved to the profile after a
-    /// successful login and reused by later logins. TEAMS_CLI_CLIENT_ID is
-    /// used when this is absent, but is not saved
+    /// successful delegated login and reused by later logins.
+    /// TEAMS_CLI_CLIENT_ID is used when this is absent, but is not saved
     #[arg(long)]
     client_id: Option<String>,
 
-    /// Azure AD client secret
+    /// Azure AD client secret. Prefer the environment variable: a value
+    /// passed as a flag shows in process listings and shell history
     #[arg(long, env = "TEAMS_CLI_CLIENT_SECRET", hide_env_values = true)]
     client_secret: Option<String>,
 
-    /// Azure AD tenant ID. Saved to the profile after a successful login and
-    /// reused by later logins. TEAMS_CLI_TENANT_ID is used when this is
-    /// absent, but is not saved
+    /// Azure AD tenant ID. Saved to the profile after a successful delegated
+    /// login and reused by later logins. TEAMS_CLI_TENANT_ID is used when
+    /// this is absent, but is not saved
     #[arg(long)]
     tenant_id: Option<String>,
 
@@ -253,7 +254,15 @@ fn login_registration(
 /// two keys in the config file. The file is read again here rather than
 /// reused from startup, because an interactive login can take minutes and
 /// the file may have been edited meanwhile.
+///
+/// A client credentials login saves nothing. That flow has no built-in
+/// application to fall back to, so it never forgets anything, and its
+/// confidential application, once saved, would be picked up by the profile's
+/// next delegated login, which such an application usually cannot serve.
 fn save_registration(args: &LoginArgs, config_path: Option<&str>, profile: &str) -> Result<bool> {
+    if args.client_credentials {
+        return Ok(false);
+    }
     let path = match config_path {
         Some(path) => std::path::PathBuf::from(path),
         None => config::default_config_path()?,
@@ -737,5 +746,53 @@ mod tests {
             panic!("expected AuthError");
         };
         assert!(!message.contains("consent-url"));
+    }
+
+    fn login_args(client_credentials: bool, client_id: Option<&str>) -> LoginArgs {
+        LoginArgs {
+            client_credentials,
+            device_code: !client_credentials,
+            client_id: client_id.map(str::to_string),
+            client_secret: None,
+            tenant_id: client_id.map(|_| "tenant-1".to_string()),
+            scopes: None,
+        }
+    }
+
+    #[test]
+    fn a_delegated_login_saves_the_ids_it_was_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let path = path.to_str().unwrap();
+        let args = login_args(false, Some("app-1"));
+        assert!(save_registration(&args, Some(path), "work").unwrap());
+        let saved = config::load_config(Some(path)).unwrap();
+        assert_eq!(saved.profiles["work"].client_id.as_deref(), Some("app-1"));
+        assert_eq!(
+            saved.profiles["work"].tenant_id.as_deref(),
+            Some("tenant-1")
+        );
+        // Given the same IDs again, the file is already up to date.
+        assert!(!save_registration(&args, Some(path), "work").unwrap());
+    }
+
+    /// A client credentials login saves nothing: the profile's next delegated
+    /// login would otherwise sign in through the confidential application.
+    #[test]
+    fn a_client_credentials_login_saves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let args = login_args(true, Some("confidential-app"));
+        assert!(!save_registration(&args, Some(path.to_str().unwrap()), "bot").unwrap());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_login_without_ids_saves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let args = login_args(false, None);
+        assert!(!save_registration(&args, Some(path.to_str().unwrap()), "work").unwrap());
+        assert!(!path.exists());
     }
 }
