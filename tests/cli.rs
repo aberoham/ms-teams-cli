@@ -1455,3 +1455,23 @@ fn config_path_reports_the_storage_namespace() {
     let path = std::path::PathBuf::from(data["data"]["path"].as_str().unwrap());
     assert_eq!(path.parent().unwrap().file_name().unwrap(), namespace);
 }
+
+/// A command that finds no token names the storage namespace it looked in when
+/// that is not the release one, so a developer whose debug build cannot see
+/// the installed release's login is told why instead of only "log in".
+#[test]
+fn missing_token_names_a_non_release_storage_namespace() {
+    let namespace = expected_namespace();
+    let result = teams()
+        .args(["user", "me", "--output", "json"])
+        .assert()
+        .code(3);
+    let output: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    let message = output["error"]["message"].as_str().unwrap();
+    assert!(message.contains("Not authenticated."), "{message}");
+    assert_eq!(
+        message.contains(&format!("storage namespace `{namespace}`")),
+        namespace != "teams-cli",
+        "{message}"
+    );
+}
