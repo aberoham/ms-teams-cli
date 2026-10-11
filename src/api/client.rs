@@ -214,18 +214,40 @@ impl GraphClient {
     }
 
     /// PATCH request with JSON body.
+    ///
+    /// Graph answers some updates (team, channel) with 204 No Content and others
+    /// with the resource. An empty body is read back with a GET of the same URL.
     pub async fn patch<T: DeserializeOwned, B: serde::Serialize>(
         &self,
         url: &str,
         body: &B,
     ) -> Result<T> {
-        self.request_with_retry(PostKind::NotPost, |this| {
-            this.http
-                .patch(url)
-                .header("Authorization", this.token.bearer_header())
-                .json(body)
-        })
-        .await
+        let resp = self
+            .send(false, |this| {
+                this.http
+                    .patch(url)
+                    .header("Authorization", this.token.bearer_header())
+                    .json(body)
+            })
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(self.error_for_status(status, body));
+        }
+
+        if status == StatusCode::NO_CONTENT || resp.content_length() == Some(0) {
+            // The update is applied; report a failed read-back as a general error
+            // (exit 1), not as the GET's own category, which would suggest it was not.
+            return self.get(url, &[]).await.map_err(|e| {
+                TeamsError::Other(anyhow::anyhow!(
+                    "Update succeeded, but reading it back failed: {e}"
+                ))
+            });
+        }
+
+        decode_json(resp, false).await
     }
 
     /// PATCH request returning no content.
@@ -1380,5 +1402,127 @@ mod tests {
         };
         assert!(source.is_connect(), "{source}");
         assert!(!err.to_string().contains("check before"), "{err}");
+    }
+
+    /// Graph documents Update team and Update channel as 204 No Content; the
+    /// update must succeed and return the resource as read back.
+    #[tokio::test]
+    async fn patch_with_no_content_reads_the_resource_back() {
+        use crate::models::team::{Team, TeamUpdateRequest};
+
+        let server = MockServer::start().await;
+        let team = serde_json::json!({ "id": "t1", "displayName": "New", "description": "d" });
+        Mock::given(method("PATCH"))
+            .and(path("/teams/t1"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/teams/t1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(team.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let req = TeamUpdateRequest {
+            display_name: Some("New".into()),
+            description: None,
+        };
+        let updated: Team = test_client()
+            .patch(&format!("{}/teams/t1", server.uri()), &req)
+            .await
+            .unwrap();
+
+        assert_eq!(serde_json::to_value(updated).unwrap(), team);
+    }
+
+    /// Update chat answers 200 with the resource; that body is used as is.
+    #[tokio::test]
+    async fn patch_with_a_body_does_not_read_back() {
+        let server = MockServer::start().await;
+        let chat = serde_json::json!({ "id": "c1", "topic": "New" });
+        Mock::given(method("PATCH"))
+            .and(path("/chats/c1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(chat.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let updated: serde_json::Value = test_client()
+            .patch(
+                &format!("{}/chats/c1", server.uri()),
+                &serde_json::json!({ "topic": "New" }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated, chat);
+    }
+
+    /// A 200 with an empty body is treated like 204.
+    #[tokio::test]
+    async fn patch_with_an_empty_200_reads_the_resource_back() {
+        let server = MockServer::start().await;
+        let channel = serde_json::json!({ "id": "ch1", "displayName": "New" });
+        Mock::given(method("PATCH"))
+            .and(path("/teams/t1/channels/ch1"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/teams/t1/channels/ch1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(channel.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let updated: serde_json::Value = test_client()
+            .patch(
+                &format!("{}/teams/t1/channels/ch1", server.uri()),
+                &serde_json::json!({ "displayName": "New" }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated, channel);
+    }
+
+    /// The update is applied even when the read-back fails, so the error says
+    /// so and exits 1 rather than with the GET's own category (here 5).
+    #[tokio::test]
+    async fn patch_read_back_failure_says_the_update_succeeded() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/teams/t1"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/teams/t1"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("gone"))
+            .mount(&server)
+            .await;
+
+        let err = test_client()
+            .patch::<serde_json::Value, _>(
+                &format!("{}/teams/t1", server.uri()),
+                &serde_json::json!({ "displayName": "New" }),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.exit_code(), 1);
+        let message = err.to_string();
+        assert!(
+            message.starts_with("Update succeeded, but reading it back failed:")
+                && message.contains("gone"),
+            "{message}"
+        );
     }
 }
