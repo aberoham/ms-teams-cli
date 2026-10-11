@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- List commands without `--all-pages` report whether the result is complete: JSON `metadata.has_more`, plus `metadata.next_link` (Graph's `@odata.nextLink`) when more pages exist. Previously a truncated page looked identical to a complete collection. With `--all-pages`, `has_more` is false. `data` is unchanged. Human and plain output print "More results available; use --all-pages" on stderr.
+
 ## v0.9.0 - 2026-10-04
 
 ### Added

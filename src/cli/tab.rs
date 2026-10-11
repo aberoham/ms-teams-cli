@@ -65,6 +65,7 @@ pub async fn run(
             if format == OutputFormat::Human {
                 let headers = vec!["Tab ID", "Display Name", "App Name", "Web URL"];
                 let rows: Vec<Vec<String>> = tabs
+                    .items
                     .iter()
                     .map(|t| {
                         vec![
@@ -79,8 +80,9 @@ pub async fn run(
                     })
                     .collect();
                 output::table::print_table(headers, rows);
+                output::print_more_hint(&tabs);
             } else {
-                output::print_success_list(format, &tabs, start);
+                output::print_success_page(format, &tabs, start);
             }
             Ok(())
         }

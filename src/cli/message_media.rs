@@ -134,7 +134,7 @@ async fn chat_recipients_at(
             },
         )
         .await?;
-        Ok(invite_recipients(&members, me.id.as_deref()))
+        Ok(invite_recipients(&members.items, me.id.as_deref()))
     }
     .await;
     match lookup {

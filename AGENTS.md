@@ -105,7 +105,7 @@ Most command modules follow this shape:
 6. Call `api::<domain>::...`.
 7. Print through `output::print_success`, `print_success_list`, or a table helper.
 
-For paginated list commands, pass `&PaginationOpts` from `src/cli/mod.rs` and use `client.get_paged` in the API layer.
+For paginated list commands, pass `&PaginationOpts` from `src/cli/mod.rs` and use `client.get_paged` in the API layer. It returns a `Page`; print it with `output::print_success_page` (and `output::print_more_hint` after a table) so `metadata.has_more`/`next_link` reach the caller.
 
 For new command domains, update:
 
