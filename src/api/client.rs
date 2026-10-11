@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 use crate::auth::token::TokenInfo;
 use crate::config::NetworkConfig;
 use crate::error::{Result, TeamsError};
-use crate::models::common::PageResponse;
+use crate::models::common::{Page, PageResponse};
 
 /// Options for paginated API requests.
 #[derive(Debug, Clone)]
@@ -148,22 +148,19 @@ impl GraphClient {
     }
 
     /// GET with pagination support. Appends `$top` and optionally follows all pages.
+    /// A single page keeps Graph's `@odata.nextLink`.
     pub async fn get_paged<T: DeserializeOwned>(
         &self,
         url: &str,
         query: &[(&str, &str)],
         pagination: &PaginationOpts,
-    ) -> Result<Vec<T>> {
+    ) -> Result<Page<T>> {
         let top_str = pagination.page_size.to_string();
         let mut full_query: Vec<(&str, &str)> = query.to_vec();
         full_query.push(("$top", &top_str));
 
-        if pagination.all_pages {
-            self.get_all_pages(url, &full_query).await
-        } else {
-            let resp: PageResponse<T> = self.get(url, &full_query).await?;
-            Ok(resp.value)
-        }
+        self.get_paged_without_top(url, &full_query, pagination)
+            .await
     }
 
     /// GET with pagination support for endpoints that reject `$top`.
@@ -172,12 +169,12 @@ impl GraphClient {
         url: &str,
         query: &[(&str, &str)],
         pagination: &PaginationOpts,
-    ) -> Result<Vec<T>> {
+    ) -> Result<Page<T>> {
         if pagination.all_pages {
-            self.get_all_pages(url, query).await
+            Ok(Page::complete(self.get_all_pages(url, query).await?))
         } else {
             let resp: PageResponse<T> = self.get(url, query).await?;
-            Ok(resp.value)
+            Ok(resp.into())
         }
     }
 
@@ -991,7 +988,8 @@ mod tests {
                 },
             )
             .await
-            .unwrap();
+            .unwrap()
+            .items;
 
         assert_eq!(channels.len(), 1);
         assert_eq!(channels[0]["displayName"], "General");
@@ -1032,10 +1030,96 @@ mod tests {
                 },
             )
             .await
-            .unwrap();
+            .unwrap()
+            .items;
 
         assert_eq!(channels.len(), 2);
         assert_eq!(channels[0]["id"], "channel-1");
         assert_eq!(channels[1]["id"], "channel-2");
+    }
+
+    /// Mounts a two-page `/me/chats` collection; returns the second page's URL.
+    async fn mount_two_pages(server: &MockServer) -> String {
+        let next = format!("{}/me/chats?$skiptoken=abc", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/me/chats"))
+            .and(query_param_is_missing("$skiptoken"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [{ "id": "chat-1" }],
+                "@odata.nextLink": next
+            })))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/me/chats"))
+            .and(query_param("$skiptoken", "abc"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [{ "id": "chat-2" }]
+            })))
+            .mount(server)
+            .await;
+        next
+    }
+
+    fn one_page() -> PaginationOpts {
+        PaginationOpts {
+            page_size: 1,
+            all_pages: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn get_paged_keeps_next_link_of_a_truncated_page() {
+        let server = MockServer::start().await;
+        let next = mount_two_pages(&server).await;
+
+        let page = test_client()
+            .get_paged::<serde_json::Value>(&format!("{}/me/chats", server.uri()), &[], &one_page())
+            .await
+            .unwrap();
+
+        assert_eq!(page.items, vec![serde_json::json!({ "id": "chat-1" })]);
+        assert_eq!(page.next_link.as_deref(), Some(next.as_str()));
+    }
+
+    #[tokio::test]
+    async fn get_paged_reports_no_next_link_on_the_last_page() {
+        let server = MockServer::start().await;
+        let next = mount_two_pages(&server).await;
+
+        let page = test_client()
+            .get_paged::<serde_json::Value>(&next, &[], &one_page())
+            .await
+            .unwrap();
+
+        assert_eq!(page.items, vec![serde_json::json!({ "id": "chat-2" })]);
+        assert!(page.next_link.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_paged_all_pages_follows_links_and_reports_no_next_link() {
+        let server = MockServer::start().await;
+        mount_two_pages(&server).await;
+
+        let page = test_client()
+            .get_paged::<serde_json::Value>(
+                &format!("{}/me/chats", server.uri()),
+                &[],
+                &PaginationOpts {
+                    page_size: 1,
+                    all_pages: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            page.items,
+            vec![
+                serde_json::json!({ "id": "chat-1" }),
+                serde_json::json!({ "id": "chat-2" })
+            ]
+        );
+        assert!(page.next_link.is_none());
     }
 }

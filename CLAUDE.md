@@ -61,6 +61,7 @@ Single-crate Rust binary. Key modules:
 
 ### Output Contract
 All commands emit a JSON envelope: `{ "success": bool, "data": ..., "metadata": { "request_id", "timestamp", "duration_ms" } }`.
+Paged list results add `metadata.has_more` and, when true, `metadata.next_link`; human/plain output prints a stderr hint instead.
 When stdout is a TTY, defaults to human-readable table format. When piped, defaults to JSON.
 Plain list columns include keys from every row, with blank cells for absent values. Human message lists include a Subject column; absent message subjects remain omitted in JSON.
 

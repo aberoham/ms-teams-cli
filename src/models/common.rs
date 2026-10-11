@@ -8,6 +8,9 @@ pub struct Metadata {
     pub api_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// Set on paged list results: true when Graph has further pages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_more: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_link: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -21,6 +24,7 @@ impl Metadata {
             timestamp: chrono::Utc::now().to_rfc3339(),
             api_version: Some("v1.0".to_string()),
             duration_ms: None,
+            has_more: None,
             next_link: None,
             total_count: None,
         }
@@ -28,6 +32,12 @@ impl Metadata {
 
     pub fn with_duration(mut self, ms: u64) -> Self {
         self.duration_ms = Some(ms);
+        self
+    }
+
+    pub fn with_page(mut self, next_link: Option<&str>) -> Self {
+        self.has_more = Some(next_link.is_some());
+        self.next_link = next_link.map(str::to_string);
         self
     }
 }
@@ -109,6 +119,31 @@ pub struct PageResponse<T> {
     pub next_link: Option<String>,
 }
 
+/// A list result: one page, or every page with `next_link` None.
+#[derive(Debug, Clone)]
+pub struct Page<T> {
+    pub items: Vec<T>,
+    pub next_link: Option<String>,
+}
+
+impl<T> Page<T> {
+    pub fn complete(items: Vec<T>) -> Self {
+        Self {
+            items,
+            next_link: None,
+        }
+    }
+}
+
+impl<T> From<PageResponse<T>> for Page<T> {
+    fn from(resp: PageResponse<T>) -> Self {
+        Self {
+            items: resp.value,
+            next_link: resp.next_link,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,6 +171,20 @@ mod tests {
         assert!(json.get("data").is_none());
         assert_eq!(json["error"]["code"], "AUTH_FAILED");
         assert_eq!(json["error"]["message"], "bad credentials");
+    }
+
+    #[test]
+    fn page_metadata_reports_continuation() {
+        let more = serde_json::to_value(Metadata::new().with_page(Some("https://next"))).unwrap();
+        assert_eq!(more["has_more"], true);
+        assert_eq!(more["next_link"], "https://next");
+
+        let last = serde_json::to_value(Metadata::new().with_page(None)).unwrap();
+        assert_eq!(last["has_more"], false);
+        assert!(last.get("next_link").is_none());
+
+        let plain = serde_json::to_value(Metadata::new()).unwrap();
+        assert!(plain.get("has_more").is_none());
     }
 
     #[test]

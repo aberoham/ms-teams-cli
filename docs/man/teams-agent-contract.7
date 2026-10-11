@@ -95,6 +95,20 @@ HTTP 5xx and network send failures use exponential backoff. List commands use
 .B --page-size
 and can follow all pages with
 .B --all-pages.
+.PP
+Paged list results add
+.B metadata.has_more
+(true when Graph has further pages) and, only when true,
+.B metadata.next_link
+(Graph's
+.B @odata.nextLink\c
+). With
+.B --all-pages
+.B has_more
+is false.
+.B data
+is unchanged. Human and plain output print
+"More results available; use --all-pages" on stderr instead.
 .SH AUTHENTICATION FOR AGENTS
 For automation that posts normal Teams chat or channel messages, use a
 delegated profile or a future Teams bot mode. Microsoft Graph app-only tokens
