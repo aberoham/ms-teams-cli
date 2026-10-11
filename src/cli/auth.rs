@@ -336,6 +336,7 @@ async fn login(
     format: OutputFormat,
 ) -> Result<()> {
     let start = Instant::now();
+    config::check_new_profile_name(profile, config)?;
     let (client_id, tenant_id) = login_registration(&args, config, profile)?;
     let client_secret = if args.client_credentials {
         Some(
@@ -511,9 +512,12 @@ pub async fn run(
 
         AuthCommand::List => {
             let start = Instant::now();
-            let profiles: Vec<serde_json::Value> = auth::keyring::list_profiles()
+            let profiles: Vec<serde_json::Value> = auth::keyring::list_profiles()?
                 .iter()
-                .map(|name| summarize_profile(name, auth::keyring::get_token(name).ok().as_ref()))
+                .map(|name| {
+                    let token = auth::keyring::get_token(name).ok().flatten();
+                    summarize_profile(name, token.as_ref())
+                })
                 .collect();
             let msg = serde_json::json!({
                 "profiles": profiles,
@@ -538,9 +542,7 @@ pub async fn run(
             // Update config to set default profile
             let mut updated_config = config.clone();
             updated_config.default.profile = Some(name.clone());
-            if let Err(e) = config::save_config(&updated_config, None) {
-                tracing::warn!("Could not save profile switch to config: {e}");
-            }
+            config::save_config(&updated_config, config_path)?;
 
             let msg = serde_json::json!({
                 "message": format!("Switched to profile '{name}'"),
@@ -556,7 +558,7 @@ pub async fn run(
         } => {
             let start = Instant::now();
             if all {
-                let profiles = auth::keyring::list_profiles();
+                let profiles = auth::keyring::list_profiles()?;
                 for p in &profiles {
                     auth::keyring::delete_token(p)?;
                     auth::keyring::remove_profile_from_index(p)?;
