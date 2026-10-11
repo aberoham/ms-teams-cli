@@ -9,6 +9,7 @@
 ### Fixed
 
 - A POST is no longer replayed after a 5xx or a network failure once sent, which could post a message twice. It fails with exit code 8 or 7 and a hint to check before re-sending. A 429 or a connection that was never made is still retried, and read-only POSTs (`search`, `presence get-batch`) retry as before.
+- A POST answered 2xx whose response body cannot be read or parsed now says Graph performed it and not to re-send, instead of a bare network or parse error.
 
 ## v0.9.0 - 2026-10-04
 

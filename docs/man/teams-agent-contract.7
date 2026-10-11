@@ -97,7 +97,8 @@ use exponential backoff, or
 when a 5xx sends one. A POST is not retried after a 5xx or a network failure
 once sent, since Graph may have performed it: it fails with exit code 8 or 7
 and a hint to check before re-sending. Read-only POSTs (search, presence batch)
-retry like GET. List commands use
+retry like GET. A POST answered 2xx whose body cannot be read fails with exit
+code 7 and a hint that it was performed; do not re-send it. List commands use
 .B --page-size
 and can follow all pages with
 .B --all-pages.

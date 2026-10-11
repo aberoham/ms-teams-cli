@@ -133,7 +133,7 @@ impl GraphClient {
 
     /// GET request with retry logic.
     pub async fn get<T: DeserializeOwned>(&self, url: &str, query: &[(&str, &str)]) -> Result<T> {
-        self.request_with_retry(false, |this| {
+        self.request_with_retry(PostKind::NotPost, |this| {
             this.http
                 .get(url)
                 .header("Authorization", this.token.bearer_header())
@@ -188,7 +188,7 @@ impl GraphClient {
         url: &str,
         body: &B,
     ) -> Result<T> {
-        self.request_with_retry(false, |this| {
+        self.request_with_retry(PostKind::Write, |this| {
             this.http
                 .post(url)
                 .header("Authorization", this.token.bearer_header())
@@ -204,7 +204,7 @@ impl GraphClient {
         url: &str,
         body: &B,
     ) -> Result<T> {
-        self.request_with_retry(true, |this| {
+        self.request_with_retry(PostKind::ReadOnly, |this| {
             this.http
                 .post(url)
                 .header("Authorization", this.token.bearer_header())
@@ -219,7 +219,7 @@ impl GraphClient {
         url: &str,
         body: &B,
     ) -> Result<T> {
-        self.request_with_retry(false, |this| {
+        self.request_with_retry(PostKind::NotPost, |this| {
             this.http
                 .patch(url)
                 .header("Authorization", this.token.bearer_header())
@@ -315,7 +315,7 @@ impl GraphClient {
     ) -> Result<T> {
         let url = url.to_string();
         let content_type = content_type.to_string();
-        self.request_with_retry(false, move |this| {
+        self.request_with_retry(PostKind::NotPost, move |this| {
             this.http
                 .put(&url)
                 .header("Authorization", this.token.bearer_header())
@@ -489,12 +489,12 @@ impl GraphClient {
     }
 
     /// Internal: execute a request with retry + rate-limit handling.
-    async fn request_with_retry<T, F>(&self, read_only: bool, build_request: F) -> Result<T>
+    async fn request_with_retry<T, F>(&self, kind: PostKind, build_request: F) -> Result<T>
     where
         T: DeserializeOwned,
         F: Fn(&Self) -> reqwest::RequestBuilder,
     {
-        let resp = self.send(read_only, build_request).await?;
+        let resp = self.send(kind == PostKind::ReadOnly, build_request).await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -502,19 +502,7 @@ impl GraphClient {
             return Err(self.error_for_status(status, body));
         }
 
-        resp.json::<T>().await.map_err(|e| {
-            if e.is_decode() {
-                TeamsError::ApiError {
-                    status: 200,
-                    message: format!(
-                        "Failed to parse API response: {}",
-                        crate::error::describe_with_causes(&e)
-                    ),
-                }
-            } else {
-                TeamsError::NetworkError(e)
-            }
-        })
+        decode_json(resp, kind == PostKind::Write).await
     }
 
     /// Internal: execute a request that returns no content (204).
@@ -532,6 +520,52 @@ impl GraphClient {
 
         Ok(())
     }
+}
+
+/// Whether a request is a POST, and if so whether it writes. Decides replay and what an
+/// unreadable 2xx body means.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PostKind {
+    NotPost,
+    ReadOnly,
+    Write,
+}
+
+/// Decode a 2xx response body. For a write POST (`accepted_write`) the 2xx means Graph
+/// performed it, so a body that cannot be read or parsed says so and warns against re-sending.
+async fn decode_json<T: DeserializeOwned>(
+    resp: reqwest::Response,
+    accepted_write: bool,
+) -> Result<T> {
+    if accepted_write {
+        let status = resp.status().as_u16();
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|source| TeamsError::AcceptedUnread { status, source })?;
+        return serde_json::from_slice(&bytes).map_err(|e| TeamsError::ApiError {
+            status: 200,
+            message: format!(
+                "Failed to parse API response: {}\n{}",
+                crate::error::describe_with_causes(&e),
+                crate::error::accepted_hint(status)
+            ),
+        });
+    }
+
+    resp.json::<T>().await.map_err(|e| {
+        if e.is_decode() {
+            TeamsError::ApiError {
+                status: 200,
+                message: format!(
+                    "Failed to parse API response: {}",
+                    crate::error::describe_with_causes(&e)
+                ),
+            }
+        } else {
+            TeamsError::NetworkError(e)
+        }
+    })
 }
 
 /// Longest wait honored from a `Retry-After` header.
@@ -1151,6 +1185,10 @@ mod tests {
         PartialHeaders,
         /// Read the request, then never answer.
         Stall,
+        /// Read the request, send complete 201 headers and part of the body, then close.
+        TruncatedBody,
+        /// Read the request, send complete 201 headers and part of the body, then stall.
+        StalledBody,
     }
 
     /// A server that reads each complete request, counts it, then misbehaves as `fault` says.
@@ -1196,6 +1234,17 @@ mod tests {
                         let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Ty").await;
                     }
                     Fault::Stall => stalled.push(stream),
+                    Fault::TruncatedBody | Fault::StalledBody => {
+                        let _ = stream
+                            .write_all(
+                                b"HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n\
+                                  Content-Length: 100\r\n\r\n{\"id\":",
+                            )
+                            .await;
+                        if matches!(fault, Fault::StalledBody) {
+                            stalled.push(stream);
+                        }
+                    }
                 }
             }
         });
@@ -1226,6 +1275,67 @@ mod tests {
     #[tokio::test]
     async fn a_reset_after_the_request_is_not_replayed_for_a_post() {
         assert_post_sent_once_and_get_retried(Fault::Reset).await;
+    }
+
+    /// 2xx headers mean Graph performed the POST, so a body that cannot be read must say so
+    /// rather than leave the caller to re-send. A GET keeps the ordinary error.
+    async fn assert_accepted_post_says_do_not_resend(fault: Fault) {
+        let (url, seen) = fault_server(fault).await;
+        let err = retrying_client(2)
+            .post::<serde_json::Value, _>(&url, &serde_json::json!({"body": "hi"}))
+            .await
+            .unwrap_err();
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "the POST was replayed");
+        let message = err.to_string();
+        assert!(message.contains("accepted the request (201"), "{message}");
+        assert!(message.contains("do not re-send"), "{message}");
+        assert_eq!(err.exit_code(), 7, "{err}");
+        assert_eq!(err.error_code(), "NETWORK_ERROR");
+
+        let (url, seen) = fault_server(fault).await;
+        let err = retrying_client(2)
+            .get::<serde_json::Value>(&url, &[])
+            .await
+            .unwrap_err();
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+        assert!(
+            err.to_string().contains("Failed to parse API response"),
+            "{err}"
+        );
+        assert!(!err.to_string().contains("re-send"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_truncated_body_after_a_201_says_the_post_was_performed() {
+        assert_accepted_post_says_do_not_resend(Fault::TruncatedBody).await;
+    }
+
+    #[tokio::test]
+    async fn a_stalled_body_after_a_201_says_the_post_was_performed() {
+        assert_accepted_post_says_do_not_resend(Fault::StalledBody).await;
+    }
+
+    /// A 2xx body that parses but does not match is also a performed write.
+    #[tokio::test]
+    async fn an_unparseable_201_says_the_post_was_performed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(201).set_body_string("not json"))
+            .mount(&server)
+            .await;
+
+        let err = retrying_client(2)
+            .post::<serde_json::Value, _>(&format!("{}/x", server.uri()), &serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(requests_seen(&server).await, 1);
+        let message = err.to_string();
+        assert!(
+            message.contains("Failed to parse API response"),
+            "{message}"
+        );
+        assert!(message.contains("accepted the request (201"), "{message}");
+        assert!(message.contains("do not re-send"), "{message}");
     }
 
     #[tokio::test]
