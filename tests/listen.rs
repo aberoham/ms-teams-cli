@@ -32,7 +32,8 @@ struct Listener {
     port: u16,
     stdout: Option<mpsc::Receiver<String>>,
     /// Held unread when the test stalls the consumer.
-    _raw_stdout: Option<ChildStdout>,
+    #[cfg_attr(not(unix), allow(dead_code))]
+    raw_stdout: Option<ChildStdout>,
     stderr: Arc<Mutex<String>>,
     _home: tempfile::TempDir,
 }
@@ -108,7 +109,7 @@ impl Listener {
             child,
             port,
             stdout,
-            _raw_stdout: raw_stdout,
+            raw_stdout,
             stderr,
             _home: home,
         }
@@ -395,4 +396,97 @@ fn listen_help_documents_flags_without_leaking_client_state() {
         .stdout(predicate::str::contains("127.0.0.1"))
         .stdout(predicate::str::contains("TEAMS_CLI_CLIENT_STATE"))
         .stdout(predicate::str::contains("sentinel-client-state").not());
+}
+
+/// Fill the stdout pipe and queue more behind it; returns the ids acknowledged.
+#[cfg(unix)]
+fn post_backlog(listener: &Listener) -> Vec<String> {
+    let pad = "x".repeat(200 * 1024);
+    (0..20)
+        .map(|i| {
+            let id = format!("n{i}");
+            let body = format!(
+                r#"{{"value":[{{"subscriptionId":"{id}","resourceData":{{"pad":"{pad}"}}}}]}}"#
+            );
+            assert_eq!(listener.post("/", &body).0, 202);
+            id
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn send_signal(listener: &Listener, signal: &str) {
+    let status = Command::new("kill")
+        .args([signal, &listener.child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[cfg(unix)]
+fn wait_exit(listener: &mut Listener) -> std::process::ExitStatus {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        if let Some(status) = listener.child.try_wait().unwrap() {
+            return status;
+        }
+        assert!(Instant::now() < deadline, "listener did not exit");
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+// Signals: Unix only. The queue logic itself is unit-tested on every OS.
+#[cfg(unix)]
+#[test]
+fn ctrl_c_writes_out_every_acknowledged_notification() {
+    let mut listener = Listener::spawn(&[], &[], false);
+    let acked = post_backlog(&listener);
+
+    send_signal(&listener, "-INT");
+    listener.stderr_eventually_contains("Shutting down");
+    // No longer admitting: the port closes.
+    let deadline = Instant::now() + WAIT;
+    while TcpStream::connect(("127.0.0.1", listener.port)).is_ok() {
+        assert!(Instant::now() < deadline, "still accepting after Ctrl+C");
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    // The reader resumes and gets everything that was acknowledged.
+    let stdout = listener.raw_stdout.take().unwrap();
+    let printed: Vec<String> = BufReader::new(stdout)
+        .lines()
+        .map(|l| {
+            let v: serde_json::Value = serde_json::from_str(&l.unwrap()).unwrap();
+            v["subscriptionId"].as_str().unwrap().to_string()
+        })
+        .collect();
+    assert_eq!(printed, acked);
+    let status = wait_exit(&mut listener);
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "{}",
+        listener.stderr.lock().unwrap()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn second_signal_abandons_the_queue_and_reports_the_loss() {
+    let mut listener = Listener::spawn(&[], &[], false);
+    post_backlog(&listener);
+
+    send_signal(&listener, "-INT");
+    listener.stderr_eventually_contains("Shutting down");
+    send_signal(&listener, "-TERM");
+    let status = wait_exit(&mut listener);
+    let stderr = listener.stderr_eventually_contains("were not written");
+    assert_eq!(status.code(), Some(1), "{stderr}");
+    let lost: u64 = stderr
+        .split("Error: ")
+        .nth(1)
+        .and_then(|s| s.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no lost count: {stderr}"));
+    assert!(lost > 0 && lost <= 20, "{stderr}");
 }
