@@ -90,8 +90,14 @@ error code is still returned even though the error envelope cannot be written.
 .SH RETRY AND PAGINATION
 Microsoft Graph calls go through a shared client that applies request timeout,
 bearer authentication, retries, and pagination. HTTP 429 honors
-.B Retry-After.
-HTTP 5xx and network send failures use exponential backoff. List commands use
+.B Retry-After
+(seconds or HTTP date, capped at 300 seconds). HTTP 5xx and network failures
+use exponential backoff, or
+.B Retry-After
+when a 5xx sends one. A POST is not retried after a 5xx or a network failure
+once sent, since Graph may have performed it: it fails with exit code 8 or 7
+and a hint to check before re-sending. Read-only POSTs (search, presence batch)
+retry like GET. List commands use
 .B --page-size
 and can follow all pages with
 .B --all-pages.

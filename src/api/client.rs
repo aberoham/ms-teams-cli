@@ -1,11 +1,12 @@
 use std::time::Duration;
 
-use reqwest::{Client, StatusCode};
+use chrono::{DateTime, NaiveDateTime, Utc};
+use reqwest::{Client, Method, StatusCode};
 use serde::de::DeserializeOwned;
 
 use crate::auth::token::TokenInfo;
 use crate::config::NetworkConfig;
-use crate::error::{Result, TeamsError};
+use crate::error::{Result, TeamsError, UNCONFIRMED_HINT};
 use crate::models::common::PageResponse;
 
 /// Options for paginated API requests.
@@ -132,7 +133,7 @@ impl GraphClient {
 
     /// GET request with retry logic.
     pub async fn get<T: DeserializeOwned>(&self, url: &str, query: &[(&str, &str)]) -> Result<T> {
-        self.request_with_retry(|this| {
+        self.request_with_retry(false, |this| {
             this.http
                 .get(url)
                 .header("Authorization", this.token.bearer_header())
@@ -187,7 +188,23 @@ impl GraphClient {
         url: &str,
         body: &B,
     ) -> Result<T> {
-        self.request_with_retry(|this| {
+        self.request_with_retry(false, |this| {
+            this.http
+                .post(url)
+                .header("Authorization", this.token.bearer_header())
+                .json(body)
+        })
+        .await
+    }
+
+    /// POST that only reads, such as `/search/query`. Graph performs nothing, so it retries like
+    /// a GET.
+    pub async fn post_read_only<T: DeserializeOwned, B: serde::Serialize>(
+        &self,
+        url: &str,
+        body: &B,
+    ) -> Result<T> {
+        self.request_with_retry(true, |this| {
             this.http
                 .post(url)
                 .header("Authorization", this.token.bearer_header())
@@ -202,7 +219,7 @@ impl GraphClient {
         url: &str,
         body: &B,
     ) -> Result<T> {
-        self.request_with_retry(|this| {
+        self.request_with_retry(false, |this| {
             this.http
                 .patch(url)
                 .header("Authorization", this.token.bearer_header())
@@ -266,61 +283,27 @@ impl GraphClient {
         url: &str,
         body: &B,
     ) -> Result<Option<String>> {
-        let max_retries = self.network.max_retries;
-        let backoff_base = self.network.retry_backoff_base;
+        let resp = self
+            .send(false, |this| {
+                this.http
+                    .post(url)
+                    .header("Authorization", this.token.bearer_header())
+                    .json(body)
+            })
+            .await?;
 
-        for attempt in 0..=max_retries {
-            let req = self
-                .http
-                .post(url)
-                .header("Authorization", self.token.bearer_header())
-                .json(body);
-
-            let resp = match req.send().await {
-                Ok(r) => r,
-                Err(e) => {
-                    if attempt < max_retries {
-                        let delay = backoff_base.pow(attempt);
-                        tracing::warn!(
-                            "Request failed (attempt {}/{}), retrying in {delay}s: {e}",
-                            attempt + 1,
-                            max_retries + 1
-                        );
-                        tokio::time::sleep(Duration::from_secs(delay)).await;
-                        continue;
-                    }
-                    return Err(TeamsError::NetworkError(e));
-                }
-            };
-
-            let status = resp.status();
-
-            if let Some(err) = self
-                .check_retryable_error(&resp, status, attempt, max_retries, backoff_base)
-                .await?
-            {
-                if err {
-                    continue;
-                }
-            }
-
-            if !status.is_success() && status != StatusCode::ACCEPTED {
-                let body = resp.text().await.unwrap_or_default();
-                return Err(self.error_for_status(status, body));
-            }
-
-            let location = resp
-                .headers()
-                .get("location")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-            return Ok(location);
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(self.error_for_status(status, body));
         }
 
-        Err(TeamsError::ApiError {
-            status: 0,
-            message: "Max retries exceeded".to_string(),
-        })
+        let location = resp
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        Ok(location)
     }
 
     /// PUT raw bytes (for file upload).
@@ -332,7 +315,7 @@ impl GraphClient {
     ) -> Result<T> {
         let url = url.to_string();
         let content_type = content_type.to_string();
-        self.request_with_retry(move |this| {
+        self.request_with_retry(false, move |this| {
             this.http
                 .put(&url)
                 .header("Authorization", this.token.bearer_header())
@@ -353,61 +336,27 @@ impl GraphClient {
         &self,
         url: &str,
     ) -> Result<(Vec<u8>, Option<String>)> {
-        let max_retries = self.network.max_retries;
-        let backoff_base = self.network.retry_backoff_base;
+        let resp = self
+            .send(false, |this| {
+                this.http
+                    .get(url)
+                    .header("Authorization", this.token.bearer_header())
+            })
+            .await?;
 
-        for attempt in 0..=max_retries {
-            let req = self
-                .http
-                .get(url)
-                .header("Authorization", self.token.bearer_header());
-
-            let resp = match req.send().await {
-                Ok(r) => r,
-                Err(e) => {
-                    if attempt < max_retries {
-                        let delay = backoff_base.pow(attempt);
-                        tracing::warn!(
-                            "Request failed (attempt {}/{}), retrying in {delay}s: {e}",
-                            attempt + 1,
-                            max_retries + 1
-                        );
-                        tokio::time::sleep(Duration::from_secs(delay)).await;
-                        continue;
-                    }
-                    return Err(TeamsError::NetworkError(e));
-                }
-            };
-
-            let status = resp.status();
-
-            if let Some(err) = self
-                .check_retryable_error(&resp, status, attempt, max_retries, backoff_base)
-                .await?
-            {
-                if err {
-                    continue;
-                }
-            }
-
-            if !status.is_success() {
-                let body = resp.text().await.unwrap_or_default();
-                return Err(self.error_for_status(status, body));
-            }
-
-            let content_type = resp
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .map(|v| v.split(';').next().unwrap_or(v).trim().to_string());
-            let bytes = resp.bytes().await.map_err(TeamsError::NetworkError)?;
-            return Ok((bytes.to_vec(), content_type));
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(self.error_for_status(status, body));
         }
 
-        Err(TeamsError::ApiError {
-            status: 0,
-            message: "Max retries exceeded".to_string(),
-        })
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.split(';').next().unwrap_or(v).trim().to_string());
+        let bytes = resp.bytes().await.map_err(TeamsError::NetworkError)?;
+        Ok((bytes.to_vec(), content_type))
     }
 
     /// Follow @odata.nextLink chain, returning all items.
@@ -435,169 +384,136 @@ impl GraphClient {
         Ok(all_items)
     }
 
-    /// Check for retryable error conditions. Returns:
-    /// - Ok(Some(true)) → should continue (retry)
-    /// - Ok(Some(false)) → impossible (reserved)
-    /// - Ok(None) → no error, proceed with response
-    /// - Err → non-retryable error
-    async fn check_retryable_error(
-        &self,
-        resp: &reqwest::Response,
-        status: StatusCode,
-        attempt: u32,
-        max_retries: u32,
-        backoff_base: u64,
-    ) -> Result<Option<bool>> {
-        if status == StatusCode::TOO_MANY_REQUESTS {
-            let retry_after = resp
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(60);
-
-            if attempt < max_retries {
-                tracing::warn!("Rate limited, waiting {retry_after}s");
-                tokio::time::sleep(Duration::from_secs(retry_after)).await;
-                return Ok(Some(true));
-            }
-            return Err(TeamsError::RateLimited { retry_after });
-        }
-
-        if status.is_server_error() {
-            if attempt < max_retries {
-                let delay = backoff_base.pow(attempt);
-                tracing::warn!(
-                    "Server error {status} (attempt {}/{}), retrying in {delay}s",
-                    attempt + 1,
-                    max_retries + 1
-                );
-                tokio::time::sleep(Duration::from_secs(delay)).await;
-                return Ok(Some(true));
-            }
-            return Err(TeamsError::ServerError {
-                status: status.as_u16(),
-                message: format!("Server error {status}"),
-            });
-        }
-
-        Ok(None)
+    /// Exponential backoff before retry `attempt + 1`.
+    fn backoff(&self, attempt: u32) -> Duration {
+        let factor = self.network.retry_backoff_base.saturating_pow(attempt);
+        BACKOFF_UNIT.saturating_mul(u32::try_from(factor).unwrap_or(u32::MAX))
     }
 
-    /// Internal: execute a request with retry + rate-limit handling.
-    async fn request_with_retry<T, F>(&self, build_request: F) -> Result<T>
+    /// Internal: send a request, retrying what is safe to retry, and return the first response
+    /// that is neither a 429 nor a retryable 5xx.
+    ///
+    /// A POST is not idempotent, so unless `read_only` it is replayed only when Graph cannot
+    /// have acted on it: on 429, and when no connection was made. Any other failure after sending
+    /// it is returned with a hint to check before re-sending. Other methods, PATCH included,
+    /// retry as before.
+    async fn send<F>(&self, read_only: bool, build_request: F) -> Result<reqwest::Response>
     where
-        T: DeserializeOwned,
         F: Fn(&Self) -> reqwest::RequestBuilder,
     {
         let max_retries = self.network.max_retries;
-        let backoff_base = self.network.retry_backoff_base;
 
         for attempt in 0..=max_retries {
-            let req = build_request(self);
+            let req = build_request(self)
+                .build()
+                .map_err(TeamsError::NetworkError)?;
+            let replayable = read_only || req.method() != Method::POST;
+            let last = attempt == max_retries;
 
-            let resp = match req.send().await {
+            let resp = match self.http.execute(req).await {
                 Ok(r) => r,
                 Err(e) => {
-                    if attempt < max_retries {
-                        let delay = backoff_base.pow(attempt);
-                        tracing::warn!(
-                            "Request failed (attempt {}/{}), retrying in {delay}s: {e}",
-                            attempt + 1,
-                            max_retries + 1
-                        );
-                        tokio::time::sleep(Duration::from_secs(delay)).await;
-                        continue;
+                    // reqwest's `is_connect` is hyper-util's `ErrorKind::Connect`, raised only
+                    // while obtaining a connection (DNS, TCP, TLS), before the request is
+                    // written. A timeout cannot say whether it was written, so it counts as sent.
+                    if !replayable && !e.is_connect() {
+                        return Err(TeamsError::UnconfirmedWrite(e));
                     }
-                    return Err(TeamsError::NetworkError(e));
+                    if last {
+                        return Err(TeamsError::NetworkError(e));
+                    }
+                    let delay = self.backoff(attempt);
+                    tracing::warn!(
+                        "Request failed (attempt {}/{}), retrying in {delay:?}: {e}",
+                        attempt + 1,
+                        max_retries + 1
+                    );
+                    tokio::time::sleep(delay).await;
+                    continue;
                 }
             };
 
             let status = resp.status();
 
-            // Rate limiting (429)
+            // Rate limiting (429): Graph did not perform the request.
             if status == StatusCode::TOO_MANY_REQUESTS {
-                let retry_after = resp
-                    .headers()
-                    .get("retry-after")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(60);
-
-                if attempt < max_retries {
-                    tracing::warn!("Rate limited, waiting {retry_after}s");
-                    tokio::time::sleep(Duration::from_secs(retry_after)).await;
-                    continue;
+                let wait = retry_after(&resp).unwrap_or(DEFAULT_RETRY_AFTER);
+                if last {
+                    return Err(TeamsError::RateLimited {
+                        retry_after: wait.as_secs() + u64::from(wait.subsec_nanos() > 0),
+                    });
                 }
-                return Err(TeamsError::RateLimited { retry_after });
+                tracing::warn!("Rate limited, waiting {wait:?}");
+                tokio::time::sleep(wait).await;
+                continue;
             }
 
-            // Auth errors
-            if status == StatusCode::UNAUTHORIZED {
-                let body = resp.text().await.unwrap_or_default();
-                return Err(TeamsError::AuthError(self.auth_error_message(&body)));
-            }
-            if status == StatusCode::FORBIDDEN {
-                let body = resp.text().await.unwrap_or_default();
-                return Err(TeamsError::PermissionDenied(
-                    self.permission_denied_message(&body),
-                ));
-            }
-
-            // Not found
-            if status == StatusCode::NOT_FOUND {
-                let body = resp.text().await.unwrap_or_default();
-                return Err(TeamsError::NotFound(body));
-            }
-
-            // Server errors (retry)
+            // Server errors: retry unless the request may have been performed.
             if status.is_server_error() {
+                let wait = retry_after(&resp);
                 let body = resp.text().await.unwrap_or_default();
-                if attempt < max_retries {
-                    let delay = backoff_base.pow(attempt);
-                    tracing::warn!(
-                        "Server error {status} (attempt {}/{}), retrying in {delay}s",
-                        attempt + 1,
-                        max_retries + 1
-                    );
-                    tokio::time::sleep(Duration::from_secs(delay)).await;
-                    continue;
+                if !replayable {
+                    let message = if body.trim().is_empty() {
+                        UNCONFIRMED_HINT.to_string()
+                    } else {
+                        format!("{body}\n{UNCONFIRMED_HINT}")
+                    };
+                    return Err(TeamsError::ServerError {
+                        status: status.as_u16(),
+                        message,
+                    });
                 }
-                return Err(TeamsError::ServerError {
-                    status: status.as_u16(),
-                    message: body,
-                });
+                if last {
+                    return Err(TeamsError::ServerError {
+                        status: status.as_u16(),
+                        message: body,
+                    });
+                }
+                let delay = wait.unwrap_or_else(|| self.backoff(attempt));
+                tracing::warn!(
+                    "Server error {status} (attempt {}/{}), retrying in {delay:?}",
+                    attempt + 1,
+                    max_retries + 1
+                );
+                tokio::time::sleep(delay).await;
+                continue;
             }
 
-            // Other client errors
-            if !status.is_success() {
-                let body = resp.text().await.unwrap_or_default();
-                return Err(TeamsError::ApiError {
-                    status: status.as_u16(),
-                    message: body,
-                });
-            }
-
-            // Success
-            let body = resp.json::<T>().await.map_err(|e| {
-                if e.is_decode() {
-                    TeamsError::ApiError {
-                        status: 200,
-                        message: format!(
-                            "Failed to parse API response: {}",
-                            crate::error::describe_with_causes(&e)
-                        ),
-                    }
-                } else {
-                    TeamsError::NetworkError(e)
-                }
-            })?;
-            return Ok(body);
+            return Ok(resp);
         }
 
         Err(TeamsError::ApiError {
             status: 0,
             message: "Max retries exceeded".to_string(),
+        })
+    }
+
+    /// Internal: execute a request with retry + rate-limit handling.
+    async fn request_with_retry<T, F>(&self, read_only: bool, build_request: F) -> Result<T>
+    where
+        T: DeserializeOwned,
+        F: Fn(&Self) -> reqwest::RequestBuilder,
+    {
+        let resp = self.send(read_only, build_request).await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(self.error_for_status(status, body));
+        }
+
+        resp.json::<T>().await.map_err(|e| {
+            if e.is_decode() {
+                TeamsError::ApiError {
+                    status: 200,
+                    message: format!(
+                        "Failed to parse API response: {}",
+                        crate::error::describe_with_causes(&e)
+                    ),
+                }
+            } else {
+                TeamsError::NetworkError(e)
+            }
         })
     }
 
@@ -606,97 +522,55 @@ impl GraphClient {
     where
         F: Fn(&Self) -> reqwest::RequestBuilder,
     {
-        let max_retries = self.network.max_retries;
-        let backoff_base = self.network.retry_backoff_base;
+        let resp = self.send(false, build_request).await?;
 
-        for attempt in 0..=max_retries {
-            let req = build_request(self);
-
-            let resp = match req.send().await {
-                Ok(r) => r,
-                Err(e) => {
-                    if attempt < max_retries {
-                        let delay = backoff_base.pow(attempt);
-                        tracing::warn!(
-                            "Request failed (attempt {}/{}), retrying in {delay}s: {e}",
-                            attempt + 1,
-                            max_retries + 1
-                        );
-                        tokio::time::sleep(Duration::from_secs(delay)).await;
-                        continue;
-                    }
-                    return Err(TeamsError::NetworkError(e));
-                }
-            };
-
-            let status = resp.status();
-
-            // Rate limiting (429)
-            if status == StatusCode::TOO_MANY_REQUESTS {
-                let retry_after = resp
-                    .headers()
-                    .get("retry-after")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(60);
-
-                if attempt < max_retries {
-                    tracing::warn!("Rate limited, waiting {retry_after}s");
-                    tokio::time::sleep(Duration::from_secs(retry_after)).await;
-                    continue;
-                }
-                return Err(TeamsError::RateLimited { retry_after });
-            }
-
-            if status == StatusCode::UNAUTHORIZED {
-                let body = resp.text().await.unwrap_or_default();
-                return Err(TeamsError::AuthError(self.auth_error_message(&body)));
-            }
-            if status == StatusCode::FORBIDDEN {
-                let body = resp.text().await.unwrap_or_default();
-                return Err(TeamsError::PermissionDenied(
-                    self.permission_denied_message(&body),
-                ));
-            }
-            if status == StatusCode::NOT_FOUND {
-                let body = resp.text().await.unwrap_or_default();
-                return Err(TeamsError::NotFound(body));
-            }
-
-            if status.is_server_error() {
-                let body = resp.text().await.unwrap_or_default();
-                if attempt < max_retries {
-                    let delay = backoff_base.pow(attempt);
-                    tracing::warn!(
-                        "Server error {status} (attempt {}/{}), retrying in {delay}s",
-                        attempt + 1,
-                        max_retries + 1
-                    );
-                    tokio::time::sleep(Duration::from_secs(delay)).await;
-                    continue;
-                }
-                return Err(TeamsError::ServerError {
-                    status: status.as_u16(),
-                    message: body,
-                });
-            }
-
-            if !status.is_success() && status != StatusCode::NO_CONTENT {
-                let body = resp.text().await.unwrap_or_default();
-                return Err(TeamsError::ApiError {
-                    status: status.as_u16(),
-                    message: body,
-                });
-            }
-
-            return Ok(());
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(self.error_for_status(status, body));
         }
 
-        Err(TeamsError::ApiError {
-            status: 0,
-            message: "Max retries exceeded".to_string(),
-        })
+        Ok(())
     }
+}
+
+/// Longest wait honored from a `Retry-After` header.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(300);
+
+/// Wait on a 429 that names none.
+const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// Unit of the exponential backoff, shrunk in tests so retries run fast.
+#[cfg(not(test))]
+const BACKOFF_UNIT: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const BACKOFF_UNIT: Duration = Duration::from_millis(1);
+
+fn retry_after(resp: &reqwest::Response) -> Option<Duration> {
+    let value = resp.headers().get(reqwest::header::RETRY_AFTER)?;
+    parse_retry_after(value.to_str().ok()?, Utc::now())
+}
+
+/// Parse a `Retry-After` value, delta-seconds or HTTP-date, clamped to `MAX_RETRY_AFTER`.
+/// A date in the past means no wait.
+fn parse_retry_after(value: &str, now: DateTime<Utc>) -> Option<Duration> {
+    let value = value.trim();
+    let wait = match value.parse::<u64>() {
+        Ok(secs) => Duration::from_secs(secs),
+        Err(_) => {
+            // IMF-fixdate, then the obsolete RFC 850 and asctime forms RFC 9110 still accepts.
+            let at = DateTime::parse_from_rfc2822(value)
+                .map(|d| d.with_timezone(&Utc))
+                .or_else(|_| {
+                    NaiveDateTime::parse_from_str(value, "%A, %d-%b-%y %H:%M:%S GMT")
+                        .or_else(|_| NaiveDateTime::parse_from_str(value, "%a %b %e %H:%M:%S %Y"))
+                        .map(|d| d.and_utc())
+                })
+                .ok()?;
+            (at - now).to_std().unwrap_or(Duration::ZERO)
+        }
+    };
+    Some(wait.min(MAX_RETRY_AFTER))
 }
 
 #[cfg(test)]
@@ -704,6 +578,8 @@ mod tests {
     use super::*;
     use crate::auth::token::TokenInfo;
     use crate::config::NetworkConfig;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use wiremock::matchers::{method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1037,5 +913,362 @@ mod tests {
         assert_eq!(channels.len(), 2);
         assert_eq!(channels[0]["id"], "channel-1");
         assert_eq!(channels[1]["id"], "channel-2");
+    }
+
+    fn retrying_client(max_retries: u32) -> GraphClient {
+        let mut client = test_client();
+        client.http = Client::builder()
+            .timeout(Duration::from_millis(500))
+            .build()
+            .unwrap();
+        client.network.max_retries = max_retries;
+        client
+    }
+
+    async fn requests_seen(server: &MockServer) -> usize {
+        server.received_requests().await.unwrap().len()
+    }
+
+    /// A 5xx answer to a POST does not say the write was not performed, so replaying it can post
+    /// twice. Every POST path must give up after one request.
+    #[tokio::test]
+    async fn a_post_answered_with_a_5xx_is_sent_once() {
+        for status in [500, 502, 503, 504] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server)
+                .await;
+            let client = retrying_client(2);
+            let url = format!("{}/chats/c/messages", server.uri());
+            let body = serde_json::json!({});
+
+            let errors = [
+                client.post::<serde_json::Value, _>(&url, &body).await.err(),
+                client.post_no_content(&url, &body).await.err(),
+                client.post_empty_no_content(&url).await.err(),
+                client.post_for_location(&url, &body).await.err(),
+            ];
+            assert_eq!(requests_seen(&server).await, 4, "{status} was replayed");
+            for err in errors {
+                let err = err.expect("a 5xx must fail");
+                assert_eq!(err.exit_code(), 8, "{status}: {err}");
+                assert!(err.to_string().contains("check before"), "{err}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_get_answered_with_a_503_is_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+
+        retrying_client(2)
+            .get::<serde_json::Value>(&format!("{}/me", server.uri()), &[])
+            .await
+            .unwrap();
+        assert_eq!(requests_seen(&server).await, 2);
+    }
+
+    #[tokio::test]
+    async fn a_read_only_post_answered_with_a_503_is_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+
+        retrying_client(2)
+            .post_read_only::<serde_json::Value, _>(
+                &format!("{}/search/query", server.uri()),
+                &serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(requests_seen(&server).await, 2);
+    }
+
+    #[tokio::test]
+    async fn patch_put_and_delete_answered_with_a_503_are_retried() {
+        let server = MockServer::start().await;
+        for verb in ["PATCH", "PUT", "DELETE"] {
+            Mock::given(method(verb))
+                .respond_with(ResponseTemplate::new(503))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+            Mock::given(method(verb))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+                .mount(&server)
+                .await;
+        }
+        let client = retrying_client(2);
+        let url = format!("{}/x", server.uri());
+        let body = serde_json::json!({});
+
+        client
+            .patch::<serde_json::Value, _>(&url, &body)
+            .await
+            .unwrap();
+        client
+            .put_bytes::<serde_json::Value>(&url, b"x".to_vec(), "text/plain")
+            .await
+            .unwrap();
+        client.delete(&url).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        for verb in ["PATCH", "PUT", "DELETE"] {
+            let sent = requests
+                .iter()
+                .filter(|r| r.method.as_str() == verb)
+                .count();
+            assert_eq!(sent, 2, "{verb} was not retried");
+        }
+    }
+
+    /// 429 means Graph did not perform the request, so even a POST is retried, after the wait
+    /// Graph asked for.
+    #[tokio::test]
+    async fn a_throttled_post_waits_for_retry_after_and_is_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "1"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": "m"})))
+            .mount(&server)
+            .await;
+
+        let started = std::time::Instant::now();
+        let sent: serde_json::Value = retrying_client(1)
+            .post(
+                &format!("{}/chats/c/messages", server.uri()),
+                &serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sent["id"], "m");
+        assert!(started.elapsed() >= Duration::from_secs(1));
+        assert_eq!(requests_seen(&server).await, 2);
+    }
+
+    /// The HTTP-date form is honored on a retryable 5xx too. The date has whole seconds, so a
+    /// date three seconds ahead is at least two ahead once truncated: longer than the backoff.
+    #[tokio::test]
+    async fn a_get_503_waits_for_an_http_date_retry_after() {
+        let server = MockServer::start().await;
+        let started = std::time::Instant::now();
+        let at = (chrono::Utc::now() + chrono::Duration::seconds(3))
+            .format("%a, %d %b %Y %H:%M:%S GMT")
+            .to_string();
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503).insert_header("Retry-After", at.as_str()))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+
+        retrying_client(1)
+            .get::<serde_json::Value>(&format!("{}/me", server.uri()), &[])
+            .await
+            .unwrap();
+        assert!(started.elapsed() >= Duration::from_secs(2));
+        assert_eq!(requests_seen(&server).await, 2);
+    }
+
+    #[tokio::test]
+    async fn a_huge_retry_after_is_clamped() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "86400"))
+            .mount(&server)
+            .await;
+
+        let err = retrying_client(0)
+            .post_no_content(&format!("{}/x", server.uri()), &serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, TeamsError::RateLimited { retry_after: 300 }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn retry_after_parses_seconds_and_http_dates() {
+        let now = DateTime::parse_from_rfc3339("2015-10-21T07:28:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let parse = |v| parse_retry_after(v, now);
+
+        assert_eq!(parse("120"), Some(Duration::from_secs(120)));
+        assert_eq!(parse(" 0 "), Some(Duration::ZERO));
+        assert_eq!(
+            parse("Wed, 21 Oct 2015 07:29:30 GMT"),
+            Some(Duration::from_secs(90))
+        );
+        assert_eq!(
+            parse("Wednesday, 21-Oct-15 07:28:10 GMT"),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(
+            parse("Wed Oct 21 07:28:05 2015"),
+            Some(Duration::from_secs(5))
+        );
+        assert_eq!(parse("Wed, 21 Oct 2015 07:00:00 GMT"), Some(Duration::ZERO));
+        assert_eq!(parse("86400"), Some(MAX_RETRY_AFTER));
+        assert_eq!(
+            parse("Thu, 22 Oct 2015 07:28:00 GMT"),
+            Some(MAX_RETRY_AFTER)
+        );
+        assert_eq!(parse("soon"), None);
+        assert_eq!(parse("-5"), None);
+    }
+
+    #[derive(Clone, Copy)]
+    enum Fault {
+        /// Read the request, then reset the connection.
+        Reset,
+        /// Read the request, send part of the status line and headers, then close.
+        PartialHeaders,
+        /// Read the request, then never answer.
+        Stall,
+    }
+
+    /// A server that reads each complete request, counts it, then misbehaves as `fault` says.
+    /// Graph may have acted on a request by the time any of these happen.
+    async fn fault_server(fault: Fault) -> (String, Arc<AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/chats/c/messages", listener.local_addr().unwrap());
+        let seen = Arc::new(AtomicUsize::new(0));
+        let counter = seen.clone();
+        tokio::spawn(async move {
+            let mut stalled = Vec::new();
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let complete = loop {
+                    if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+                        let length = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .map_or(0, |v| v.trim().parse::<usize>().unwrap());
+                        if buf.len() >= end + 4 + length {
+                            break true;
+                        }
+                    }
+                    match stream.read(&mut chunk).await {
+                        Ok(0) | Err(_) => break false,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                };
+                if !complete {
+                    continue;
+                }
+                counter.fetch_add(1, Ordering::SeqCst);
+                match fault {
+                    Fault::Reset => {
+                        #[allow(deprecated)]
+                        stream.set_linger(Some(Duration::ZERO)).unwrap();
+                    }
+                    Fault::PartialHeaders => {
+                        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Ty").await;
+                    }
+                    Fault::Stall => stalled.push(stream),
+                }
+            }
+        });
+        (url, seen)
+    }
+
+    async fn assert_post_sent_once_and_get_retried(fault: Fault) {
+        let (url, seen) = fault_server(fault).await;
+        let err = retrying_client(2)
+            .post::<serde_json::Value, _>(&url, &serde_json::json!({"body": "hi"}))
+            .await
+            .unwrap_err();
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "the POST was replayed");
+        assert!(matches!(err, TeamsError::UnconfirmedWrite(_)), "{err:?}");
+        assert_eq!(err.exit_code(), 7, "{err}");
+        assert_eq!(err.error_code(), "NETWORK_ERROR");
+        assert!(err.to_string().contains("check before"), "{err}");
+
+        let (url, seen) = fault_server(fault).await;
+        let err = retrying_client(2)
+            .get::<serde_json::Value>(&url, &[])
+            .await
+            .unwrap_err();
+        assert_eq!(seen.load(Ordering::SeqCst), 3, "the GET was not retried");
+        assert_eq!(err.exit_code(), 7, "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_reset_after_the_request_is_not_replayed_for_a_post() {
+        assert_post_sent_once_and_get_retried(Fault::Reset).await;
+    }
+
+    #[tokio::test]
+    async fn a_reset_on_a_read_only_post_is_retried() {
+        let (url, seen) = fault_server(Fault::Reset).await;
+        let err = retrying_client(2)
+            .post_read_only::<serde_json::Value, _>(&url, &serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            3,
+            "the read-only POST was not retried"
+        );
+        assert!(matches!(err, TeamsError::NetworkError(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn a_partial_response_is_not_replayed_for_a_post() {
+        assert_post_sent_once_and_get_retried(Fault::PartialHeaders).await;
+    }
+
+    #[tokio::test]
+    async fn a_timeout_after_the_request_is_not_replayed_for_a_post() {
+        assert_post_sent_once_and_get_retried(Fault::Stall).await;
+    }
+
+    /// A refused connection proves the request never left, so a POST may retry it, and the
+    /// failure carries no warning that it might have been performed.
+    #[tokio::test]
+    async fn a_refused_connection_is_retryable_for_a_post() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/x", listener.local_addr().unwrap());
+        drop(listener);
+
+        let err = retrying_client(2)
+            .post_no_content(&url, &serde_json::json!({}))
+            .await
+            .unwrap_err();
+        let TeamsError::NetworkError(source) = &err else {
+            panic!("expected a plain NetworkError, got {err:?}");
+        };
+        assert!(source.is_connect(), "{source}");
+        assert!(!err.to_string().contains("check before"), "{err}");
     }
 }
