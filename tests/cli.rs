@@ -1517,6 +1517,10 @@ fn a_legacy_profile_name_in_the_token_index_keeps_working() {
     for (name, expected) in [
         ("customer/a", "Client secret is required"),
         ("customer/b", "Invalid profile name"),
+        (
+            "customer.a",
+            "would share a token file with profile 'customer/a'",
+        ),
     ] {
         file_store()
             .args(["--profile", name, "--output", "json"])
