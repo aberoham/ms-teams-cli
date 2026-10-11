@@ -393,6 +393,7 @@ teams message list --team <team-id> --channel <channel-id>
 teams message list --team <team-id> --channel <channel-id> --message-id <root-message-id> --all-pages
 teams message list --chat <chat-id>
 teams message get --team <team-id> --channel <channel-id> --message <msg-id>
+teams message attachments delete --chat <chat-id> --message <msg-id> [--index N] --yes
 teams message reply --team <team-id> --channel <channel-id> --message <msg-id> --mention <user-id-or-upn> --body "Thanks!"
 teams message update --team <team-id> --channel <channel-id> --message <msg-id> --body "Corrected"
 teams message update --chat <chat-id> --message <msg-id> --body "Corrected"
@@ -416,6 +417,12 @@ upload and sharing need `Files.ReadWrite`. Object IDs are used only for a tenant
 confirmed to match the sender's; other recipients use email. Lookup or sharing
 failures warn on stderr and allow upload/send to continue. Members without a
 usable address are reported for manual sharing from OneDrive.
+
+`message attachments delete ... --yes` removes those uploads from your OneDrive
+(`--index N` for one item, numbered as in `attachments list`). Only files in
+your own OneDrive are deleted; inline images, files shared by others and
+channel files are skipped with a reason. The message and its file card stay;
+use `message delete` for the message.
 
 The `--mention USER` flag on `message send` and `message reply` tags a person as a real Teams @mention — the kind that pings
 them, not literal `@Name` text. The flag is repeatable and `USER` may be an Entra object ID

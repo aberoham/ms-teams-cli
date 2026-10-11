@@ -111,6 +111,7 @@ teams message list (--team TEAM_ID --channel CHANNEL_ID [--message-id ROOT_MESSA
 teams message get --team TEAM_ID --channel CHANNEL_ID (MESSAGE_ID | --message MESSAGE_ID) [--with-attachments]
 teams message attachments list (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID)
 teams message attachments download (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) [--index N] [--dir DIR | --path FILE]
+teams message attachments delete (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) [--index N] --yes
 teams message reply --team TEAM_ID --channel CHANNEL_ID --message-id MESSAGE_ID [--body TEXT | --stdin] [--content-type text|html] [--image PATH]... [--attach PATH]... [--mention USER]...
 teams message update (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) --body TEXT [--content-type text|html]
 teams message delete (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) --yes
@@ -171,6 +172,8 @@ teams message send --chat CHAT_ID --quote MESSAGE_ID --body "Yes, that works."
 ```
 
 `message attachments` unifies the two ways Teams stores message media: inline images pasted into the compose box (Graph "hosted contents") and files attached via SharePoint/OneDrive (`reference` attachments). `list` returns an indexed inventory; `download` fetches everything downloadable by default, or one item with `--index` (add `--path FILE` for an exact destination, or `--path -` to stream to stdout). Inline images and code snippets need no scopes beyond message reads; file attachments additionally require the `Files.Read.All` delegated scope. `message get --with-attachments` embeds the same inventory under `attachment_items` in the message output.
+
+`message attachments delete` removes files you attached (`message send --attach`) from your OneDrive. Each selected `reference` item is resolved through Graph's `/shares/{token}/driveItem` and deleted only when it is a file in your own drive (`/me/drive`); inline images, code snippets, cards, files shared by others and channel files are skipped with a `reason`, and so is a file Graph cannot find or let you see. Without `--index` every item is considered; `--index N` uses the numbering of `attachments list`. Output lists `{index, name, deleted, reason?}` per item; a file already gone counts as deleted (`reason: "already deleted"`). A Graph failure on a delete is an error, naming items deleted before it. Needs `Files.ReadWrite`, and `--yes` (without it the command exits with code 2 and sends nothing). The message itself is not changed: its file card remains, now pointing at a missing file. Use `message delete` to remove the message.
 
 ## Chats
 

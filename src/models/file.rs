@@ -79,6 +79,12 @@ pub struct FilesFolder {
     pub parent_reference: Option<ItemReference>,
 }
 
+/// A drive (`GET /me/drive`); only its ID is needed.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Drive {
+    pub id: Option<String>,
+}
+
 /// Request to create a sharing link
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -104,7 +104,7 @@ pub enum MessageCommand {
         #[arg(long)]
         with_attachments: bool,
     },
-    /// List or download message attachments and inline images
+    /// List, download or delete message attachments and inline images
     Attachments {
         #[command(subcommand)]
         command: super::message_attachments::AttachmentsCommand,
@@ -351,6 +351,14 @@ pub async fn run(
     if let MessageCommand::Delete { yes: false, .. } = &cmd {
         return Err(TeamsError::InvalidInput(
             "Deleting a message needs explicit confirmation: add --yes".into(),
+        ));
+    }
+    if let MessageCommand::Attachments {
+        command: super::message_attachments::AttachmentsCommand::Delete { yes: false, .. },
+    } = &cmd
+    {
+        return Err(TeamsError::InvalidInput(
+            "Deleting attachments needs explicit confirmation: add --yes".into(),
         ));
     }
 

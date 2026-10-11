@@ -948,6 +948,100 @@ fn message_delete_rejects_incomplete_or_mixed_targets() {
         .stderr(predicate::str::contains("--team"));
 }
 
+/// Like `message delete`, attachment deletion is refused without `--yes`
+/// before any token is resolved, so the exit code is 2, not an auth error.
+#[test]
+fn message_attachments_delete_requires_yes() {
+    teams()
+        .args([
+            "message",
+            "attachments",
+            "delete",
+            "--chat",
+            "19:abc@thread.v2",
+            "--message",
+            "1700000000000",
+            "--index",
+            "1",
+            "--output",
+            "json",
+        ])
+        .assert()
+        .code(2)
+        .stdout(
+            predicate::str::contains("\"success\": false")
+                .and(predicate::str::contains("INVALID_INPUT"))
+                .and(predicate::str::contains("--yes")),
+        );
+}
+
+#[test]
+fn message_attachments_delete_rejects_incomplete_or_mixed_targets() {
+    teams()
+        .args([
+            "message",
+            "attachments",
+            "delete",
+            "--team",
+            "team-id",
+            "--message",
+            "1",
+            "--yes",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--channel"));
+
+    teams()
+        .args([
+            "message",
+            "attachments",
+            "delete",
+            "--chat",
+            "19:abc@thread.v2",
+            "--team",
+            "team-id",
+            "--channel",
+            "channel-id",
+            "--message",
+            "1",
+            "--yes",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("cannot be used with"));
+
+    teams()
+        .args([
+            "message",
+            "attachments",
+            "delete",
+            "--chat",
+            "19:abc@thread.v2",
+            "--reply",
+            "2",
+            "--message",
+            "1",
+            "--yes",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("cannot be used with"));
+
+    teams()
+        .args([
+            "message",
+            "attachments",
+            "delete",
+            "--message",
+            "1",
+            "--yes",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--chat"));
+}
+
 #[test]
 fn message_documented_flags_are_available() {
     teams()

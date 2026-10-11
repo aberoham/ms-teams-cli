@@ -1,8 +1,8 @@
 use crate::error::{Result, TeamsError};
 use crate::models::common::PageResponse;
 use crate::models::file::{
-    DriveInviteRequest, DriveItem, DrivePermission, DriveRecipient, FilesFolder, ShareLinkRequest,
-    ShareLinkResponse,
+    Drive, DriveInviteRequest, DriveItem, DrivePermission, DriveRecipient, FilesFolder,
+    ShareLinkRequest, ShareLinkResponse,
 };
 
 use super::client::{GraphClient, PaginationOpts};
@@ -315,6 +315,59 @@ pub async fn delete_file(
     client
         .delete(&endpoints::drive_item(drive_id, file_id))
         .await
+}
+
+/// ID of the signed-in user's OneDrive.
+pub async fn my_drive_id_at(client: &GraphClient, base: &str) -> Result<String> {
+    let drive: Drive = client
+        .get(&endpoints::me_drive_at(base), &[])
+        .await
+        .map_err(delete_scope_hint)?;
+    drive.id.ok_or_else(|| TeamsError::ApiError {
+        status: 500,
+        message: "/me/drive missing id".to_string(),
+    })
+}
+
+/// Resolve a shared web URL (an attachment's `contentUrl`) to its drive item.
+pub async fn shared_drive_item_at(
+    client: &GraphClient,
+    base: &str,
+    content_url: &str,
+) -> Result<DriveItem> {
+    let token = endpoints::sharing_url_token(content_url);
+    client
+        .get(&endpoints::shares_drive_item_at(base, &token), &[])
+        .await
+}
+
+/// Delete an item from a drive. A 404 is returned as `NotFound` unchanged so
+/// the caller can treat an item that is already gone as deleted.
+pub async fn delete_drive_item_at(
+    client: &GraphClient,
+    base: &str,
+    drive_id: &str,
+    item_id: &str,
+) -> Result<()> {
+    client
+        .delete(&endpoints::drive_item_at(base, drive_id, item_id))
+        .await
+        .map_err(|e| match e {
+            TeamsError::PermissionDenied(_) => delete_scope_hint(e),
+            other => other,
+        })
+}
+
+/// Graph masks a drive the token cannot see as 404, so `/me/drive` failing
+/// with 403 or 404 usually means the Files.ReadWrite scope is missing.
+fn delete_scope_hint(err: TeamsError) -> TeamsError {
+    let hint = "\nHint: deleting attachment uploads needs the Files.ReadWrite delegated \
+                scope. Add it to your profile's scopes and run `teams auth refresh`.";
+    match err {
+        TeamsError::PermissionDenied(msg) => TeamsError::PermissionDenied(format!("{msg}{hint}")),
+        TeamsError::NotFound(msg) => TeamsError::NotFound(format!("{msg}{hint}")),
+        other => other,
+    }
 }
 
 /// Grant `recipients` read access to an item in the signed-in user's OneDrive,

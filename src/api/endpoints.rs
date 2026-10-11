@@ -324,7 +324,11 @@ pub fn channel_files_folder(team_id: &str, channel_id: &str) -> String {
 }
 
 pub fn drive_item(drive_id: &str, item_id: &str) -> String {
-    format!("{GRAPH_V1}/drives/{drive_id}/items/{item_id}")
+    drive_item_at(GRAPH_V1, drive_id, item_id)
+}
+
+pub fn drive_item_at(base: &str, drive_id: &str, item_id: &str) -> String {
+    format!("{base}/drives/{drive_id}/items/{item_id}")
 }
 
 pub fn drive_item_children(drive_id: &str, item_id: &str) -> String {
@@ -348,6 +352,10 @@ pub fn drive_upload_to_folder_rename(drive_id: &str, parent_id: &str, filename: 
     format!(
         "{GRAPH_V1}/drives/{drive_id}/items/{parent_id}:/{name}:/content?@microsoft.graph.conflictBehavior=rename"
     )
+}
+
+pub fn me_drive_at(base: &str) -> String {
+    format!("{base}/me/drive")
 }
 
 pub fn me_drive_root_children() -> String {
@@ -456,6 +464,10 @@ pub fn shares_drive_item_content(sharing_token: &str) -> String {
     format!("{GRAPH_V1}/shares/{sharing_token}/driveItem/content")
 }
 
+pub fn shares_drive_item_at(base: &str, sharing_token: &str) -> String {
+    format!("{base}/shares/{sharing_token}/driveItem")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,6 +498,23 @@ mod tests {
         assert_eq!(
             token,
             "u!aHR0cHM6Ly90ZW5hbnQtbXkuc2hhcmVwb2ludC5jb20vcGVyc29uYWwvdXNlci9Eb2N1bWVudHMvTWljcm9zb2Z0JTIwVGVhbXMlMjBDaGF0JTIwRmlsZXMvTmV0c2tvcGVMb2dzLnppcA"
+        );
+    }
+
+    #[test]
+    fn attachment_delete_urls() {
+        let url = "https://tenant-my.sharepoint.com/personal/user/Documents/Microsoft%20Teams%20Chat%20Files/NetskopeLogs.zip";
+        assert_eq!(
+            shares_drive_item_at(GRAPH_V1, &sharing_url_token(url)),
+            "https://graph.microsoft.com/v1.0/shares/u!aHR0cHM6Ly90ZW5hbnQtbXkuc2hhcmVwb2ludC5jb20vcGVyc29uYWwvdXNlci9Eb2N1bWVudHMvTWljcm9zb2Z0JTIwVGVhbXMlMjBDaGF0JTIwRmlsZXMvTmV0c2tvcGVMb2dzLnppcA/driveItem"
+        );
+        assert_eq!(
+            me_drive_at(GRAPH_V1),
+            "https://graph.microsoft.com/v1.0/me/drive"
+        );
+        assert_eq!(
+            drive_item("d1", "i1"),
+            "https://graph.microsoft.com/v1.0/drives/d1/items/i1"
         );
     }
 
