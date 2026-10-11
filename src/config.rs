@@ -216,30 +216,9 @@ pub fn save_config(config: &ConfigFile, path: Option<&str>) -> Result<()> {
         Some(p) => PathBuf::from(p),
         None => default_config_path()?,
     };
-
-    if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| TeamsError::ConfigError(format!("Failed to create config dir: {e}")))?;
-    }
-
     let content = toml::to_string_pretty(config)
         .map_err(|e| TeamsError::ConfigError(format!("Failed to serialize config: {e}")))?;
-
-    fs::write(&config_path, &content).map_err(|e| {
-        TeamsError::ConfigError(format!(
-            "Failed to write config to {}: {e}",
-            config_path.display()
-        ))
-    })?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        fs::set_permissions(&config_path, perms).ok();
-    }
-
-    Ok(())
+    write_config_text(&config_path, &content)
 }
 
 /// Resolve the active profile: an explicit `--profile` flag or
@@ -1080,6 +1059,29 @@ client_id = \"other-app\"
             .file_type()
             .is_symlink());
         assert_eq!(fs::read_to_string(&target).unwrap(), "a = 2\n");
+    }
+
+    /// `save_config` replaces the file rather than truncating it, so a write
+    /// that fails, here for want of a writable directory, keeps the old file.
+    #[cfg(unix)]
+    #[test]
+    fn save_config_failure_keeps_the_old_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[default]\nprofile = \"old\"\n").unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+
+        let mut config = ConfigFile::default();
+        config.default.profile = Some("new".into());
+        let saved = save_config(&config, path.to_str());
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert!(matches!(saved, Err(TeamsError::ConfigError(_))));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[default]\nprofile = \"old\"\n"
+        );
     }
 
     #[test]

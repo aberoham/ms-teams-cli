@@ -541,9 +541,7 @@ pub async fn run(
             // Update config to set default profile
             let mut updated_config = config.clone();
             updated_config.default.profile = Some(name.clone());
-            if let Err(e) = config::save_config(&updated_config, None) {
-                tracing::warn!("Could not save profile switch to config: {e}");
-            }
+            config::save_config(&updated_config, config_path)?;
 
             let msg = serde_json::json!({
                 "message": format!("Switched to profile '{name}'"),
