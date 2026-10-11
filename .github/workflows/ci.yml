@@ -89,3 +89,15 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo test --all-targets
+
+  release-scripts:
+    name: Release scripts
+    # A mirror build calls this workflow on upstream's source, which has none
+    # of the fork's release scripts; they were tested when they reached next.
+    if: inputs.repository == ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v

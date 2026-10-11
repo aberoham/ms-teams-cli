@@ -33,13 +33,11 @@ have migrated. Do not re-sign these release binaries with a local certificate.
 
 `.github/workflows/mirror-upstream.yml` runs on weekday mornings from `next`,
 the default branch, or by hand with an upstream tag, and does nothing from any
-other branch. From osodevops/ms-teams-cli's 20 most recent stable releases it
-takes the oldest one not yet mirrored, so two releases between runs are both
-built; an older omission needs a run by hand with its tag. It stops for a
-person, rather than skipping or overwriting, when an `upstream-vX.Y.Z` release
-is a draft or lacks any of its seven expected assets, when the tag exists
-without a release, when a lookup fails other than with 404, and when the
-upstream tag is not on upstream's `main`.
+other branch. It builds osodevops/ms-teams-cli's stable releases newer than
+the newest `upstream-vX.Y.Z` here, oldest first; older releases are ignored.
+It stops for a person when a mirror is a draft or incomplete, a tag exists
+without a release, a lookup fails, or the upstream tag is not on `main`.
+`.github/scripts/test_mirror_find.py` tests the choice; CI runs it.
 
 It calls `release.yml` with upstream's repository and commit. The CI, build,
 signing, notarization and attestation jobs are the ones a tag release runs;
