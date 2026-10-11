@@ -1337,9 +1337,7 @@ fn message_update_requires_channel_alongside_team() {
 }
 
 /// A mistyped `TEAMS_CLI_TOKEN_STORE` is refused before any command runs, in
-/// the error envelope with exit code 2. Token reads treat every store error as
-/// "not signed in", so without the check a typo would read as exit code 3 and
-/// send the caller to log in again.
+/// the error envelope with exit code 2, naming the variable.
 #[test]
 fn unknown_token_store_is_invalid_input_not_an_auth_error() {
     for args in [["chat", "list"], ["auth", "list"]] {
@@ -1406,6 +1404,141 @@ fn file_token_store_lists_and_logs_out_a_profile() {
         fs::read_to_string(tokens.join("profile-index")).unwrap(),
         "[]"
     );
+}
+
+/// A new profile name is limited to `A-Z a-z 0-9 . _ -`: the file token
+/// store maps `/` to `.`, so `customer/a` would share `customer.a`'s token.
+/// Each way a name can be created refuses it as invalid input and writes
+/// nothing.
+#[test]
+fn an_invalid_new_profile_name_is_refused() {
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let config_path = dir.path().join("config.toml");
+    let config = config_path.to_str().unwrap();
+    let refused = |cmd: &mut Command| {
+        cmd.args(["--config", config, "--output", "json"])
+            .assert()
+            .code(2)
+            .stdout(
+                predicate::str::contains("INVALID_INPUT")
+                    .and(predicate::str::contains("Invalid profile name")),
+            );
+    };
+    let login = ["auth", "login", "--client-credentials"];
+    let long = "x".repeat(65);
+    for name in ["customer/a", "a:b", "..", "", long.as_str()] {
+        refused(teams().args(["--profile", name]).args(login));
+    }
+    refused(teams().env("TEAMS_CLI_PROFILE", "customer/a").args(login));
+    refused(teams().args(["config", "set", "profiles.customer/a.tenant_id", "t"]));
+    refused(teams().args(["config", "set", "default.profile", "customer/a"]));
+    assert!(!config_path.exists());
+}
+
+/// A valid name gets past the name check; this login then stops for want of
+/// a client secret, before any network call.
+#[test]
+fn a_valid_new_profile_name_is_accepted() {
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let config_path = dir.path().join("config.toml");
+    let config = config_path.to_str().unwrap();
+    for name in ["customer.a", "work_2-B"] {
+        teams()
+            .args(["--config", config, "--output", "json", "--profile", name])
+            .args(["auth", "login", "--client-credentials"])
+            .args(["--client-id", "app-1", "--tenant-id", "tenant-1"])
+            .assert()
+            .code(2)
+            .stdout(predicate::str::contains("Client secret is required"));
+    }
+    teams()
+        .args(["--config", config, "--output", "json"])
+        .args(["config", "set", "profiles.customer-a.tenant_id", "t"])
+        .assert()
+        .success();
+}
+
+/// A profile created before names were limited keeps working: it loads from
+/// the config, can be edited and signed in to again.
+#[test]
+fn a_legacy_profile_name_in_the_config_keeps_working() {
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let config_path = dir.path().join("config.toml");
+    let config = config_path.to_str().unwrap();
+    fs::write(
+        &config_path,
+        r#"[default]
+profile = "customer/a"
+
+[profiles."customer/a"]
+client_id = "app-1"
+tenant_id = "tenant-1"
+"#,
+    )
+    .unwrap();
+    teams()
+        .args(["--config", config, "--output", "json", "config", "profiles"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("customer/a"));
+    teams()
+        .args(["--config", config, "--output", "json"])
+        .args(["config", "set", "profiles.customer/a.tenant_id", "tenant-2"])
+        .assert()
+        .success();
+    // Resolved from `default.profile`, and again given explicitly.
+    for profile in [&[][..], &["--profile", "customer/a"][..]] {
+        teams()
+            .args(["--config", config, "--output", "json"])
+            .args(profile)
+            .args(["auth", "login", "--client-credentials"])
+            .assert()
+            .code(2)
+            .stdout(predicate::str::contains("Client secret is required"));
+    }
+}
+
+/// A legacy name known only from the file store's profile index also keeps
+/// working. Not on Windows, whose config directory ignores `HOME`.
+#[cfg(not(windows))]
+#[test]
+fn a_legacy_profile_name_in_the_token_index_keeps_working() {
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let file_store = || {
+        let mut cmd = teams();
+        cmd.env_remove("TEAMS_CLI_DISABLE_KEYRING")
+            .env("TEAMS_CLI_TOKEN_STORE", "file")
+            .env("HOME", home.path())
+            .env("XDG_CONFIG_HOME", home.path());
+        cmd
+    };
+    let output = file_store()
+        .args(["config", "path", "--output", "json"])
+        .output()
+        .unwrap();
+    let output: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let config_path = std::path::PathBuf::from(output["data"]["path"].as_str().unwrap());
+    assert!(config_path.starts_with(home.path()));
+    let tokens = config_path.parent().unwrap().join("tokens");
+    fs::create_dir_all(&tokens).unwrap();
+    fs::write(tokens.join("profile-index"), r#"["customer/a"]"#).unwrap();
+
+    for (name, expected) in [
+        ("customer/a", "Client secret is required"),
+        ("customer/b", "Invalid profile name"),
+        (
+            "customer.a",
+            "would share a token file with profile 'customer/a'",
+        ),
+    ] {
+        file_store()
+            .args(["--profile", name, "--output", "json"])
+            .args(["auth", "login", "--client-credentials"])
+            .args(["--client-id", "app-1", "--tenant-id", "tenant-1"])
+            .assert()
+            .code(2)
+            .stdout(predicate::str::contains(expected));
+    }
 }
 
 /// `--help` names the environment variable a client secret can come from, but
@@ -1501,4 +1634,193 @@ fn a_failed_login_does_not_save_the_given_ids() {
         .code(2)
         .stdout(predicate::str::contains("Client secret is required"));
     assert!(!config_path.exists());
+}
+
+/// A `teams` command factory using the file token store under `home`, and
+/// that store's `tokens/` directory, created. Not on Windows, whose config
+/// directory ignores `HOME`.
+#[cfg(not(windows))]
+fn file_store_in(home: &std::path::Path) -> (impl Fn() -> Command + '_, std::path::PathBuf) {
+    let output = teams()
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home)
+        .args(["config", "path", "--output", "json"])
+        .output()
+        .unwrap();
+    let data: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let config_path = std::path::PathBuf::from(data["data"]["path"].as_str().unwrap());
+    assert!(config_path.starts_with(home));
+    let tokens = config_path.parent().unwrap().join("tokens");
+    fs::create_dir_all(&tokens).unwrap();
+    let cmd = move || {
+        let mut cmd = teams();
+        cmd.env_remove("TEAMS_CLI_DISABLE_KEYRING")
+            .env("TEAMS_CLI_TOKEN_STORE", "file")
+            .env("HOME", home)
+            .env("XDG_CONFIG_HOME", home);
+        cmd
+    };
+    (cmd, tokens)
+}
+
+/// A corrupt profile index is an error (exit code 10), never an empty list:
+/// `auth list` must not report no profiles, `logout --all` must not report
+/// "0 profile(s)" as a success, and none of them may rewrite the index.
+#[cfg(not(windows))]
+#[test]
+fn corrupt_profile_index_is_a_storage_error_and_left_untouched() {
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let (file_store, tokens) = file_store_in(home.path());
+    let index = tokens.join("profile-index");
+    fs::write(&index, "not json").unwrap();
+
+    for args in [
+        &["auth", "list"][..],
+        &["auth", "logout", "--all"],
+        &["auth", "logout", "--profile", "work"],
+    ] {
+        file_store()
+            .args(args)
+            .args(["--output", "json"])
+            .assert()
+            .code(10)
+            .stdout(
+                predicate::str::contains("KEYRING_ERROR")
+                    .and(predicate::str::contains("profile index")),
+            );
+        assert_eq!(fs::read_to_string(&index).unwrap(), "not json", "{args:?}");
+    }
+}
+
+/// An index that exists but cannot be read is an error too, not "no profiles".
+#[cfg(not(windows))]
+#[test]
+fn unreadable_profile_index_is_a_storage_error() {
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let (file_store, tokens) = file_store_in(home.path());
+    // a directory where the index file belongs: reading it fails, but not as
+    // "not found"
+    fs::create_dir(tokens.join("profile-index")).unwrap();
+
+    for args in [&["auth", "list"][..], &["auth", "logout", "--all"]] {
+        file_store()
+            .args(args)
+            .args(["--output", "json"])
+            .assert()
+            .code(10)
+            .stdout(predicate::str::contains("KEYRING_ERROR"));
+    }
+}
+
+/// Only a token that is not stored at all means "not authenticated" (exit
+/// code 3). A token the store holds but cannot read is a storage error (exit
+/// code 10) naming the cause, so the caller is not sent to log in again.
+#[cfg(not(windows))]
+#[test]
+fn absent_token_is_auth_error_but_unreadable_token_is_storage_error() {
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let (file_store, tokens) = file_store_in(home.path());
+    let token = tokens.join("work.token");
+
+    file_store()
+        .args(["--profile", "work", "user", "me", "--output", "json"])
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("Not authenticated."));
+
+    fs::create_dir(&token).unwrap();
+    file_store()
+        .args(["--profile", "work", "user", "me", "--output", "json"])
+        .assert()
+        .code(10)
+        .stdout(
+            predicate::str::contains("KEYRING_ERROR")
+                .and(predicate::str::contains("Failed to retrieve token"))
+                .and(predicate::str::contains("Not authenticated").not()),
+        );
+
+    fs::remove_dir(&token).unwrap();
+    fs::write(&token, "not json").unwrap();
+    file_store()
+        .args(["--profile", "work", "auth", "refresh", "--output", "json"])
+        .assert()
+        .code(10)
+        .stdout(predicate::str::contains("Failed to parse stored token"));
+}
+
+/// The default config path under `home`, as `config path` reports it.
+#[cfg(not(windows))]
+fn default_config_path_in(home: &std::path::Path) -> std::path::PathBuf {
+    let output = teams()
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home)
+        .args(["config", "path", "--output", "json"])
+        .output()
+        .unwrap();
+    let data: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(data["data"]["source"], "default");
+    std::path::PathBuf::from(data["data"]["path"].as_str().unwrap())
+}
+
+/// `config path` reports the `--config` file when one is given.
+#[test]
+fn config_path_reports_the_config_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("customer.toml");
+    let result = teams()
+        .args(["--config", path.to_str().unwrap()])
+        .args(["config", "path", "--output", "json"])
+        .assert()
+        .success();
+    let data: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    assert_eq!(data["data"]["path"], path.to_str().unwrap());
+    assert_eq!(data["data"]["source"], "flag");
+    assert_eq!(data["data"]["exists"], false);
+}
+
+/// `auth switch --config F` records the profile in F and leaves the default
+/// config alone. Not on Windows, whose config directory ignores `HOME`.
+#[cfg(not(windows))]
+#[test]
+fn auth_switch_saves_to_the_config_flag() {
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let default_path = default_config_path_in(home.path());
+    assert!(default_path.starts_with(home.path()));
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_customer_profile_config(&dir);
+
+    teams()
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path())
+        .env("TEAMS_CLI_ACCESS_TOKEN", "not-a-jwt")
+        .args(["--config", path.to_str().unwrap()])
+        .args(["auth", "switch", "customer", "--output", "json"])
+        .assert()
+        .success();
+
+    let saved = fs::read_to_string(&path).unwrap();
+    assert!(saved.contains("profile = \"customer\""), "{saved}");
+    assert!(saved.contains("11111111-1111-1111-1111-111111111111"));
+    assert!(!default_path.exists());
+}
+
+/// A switch that cannot be saved fails with a config error instead of
+/// reporting success.
+#[test]
+fn auth_switch_fails_when_the_config_cannot_be_saved() {
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let not_a_dir = dir.path().join("file");
+    fs::write(&not_a_dir, "").unwrap();
+    let path = not_a_dir.join("config.toml");
+
+    teams()
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path())
+        .env("TEAMS_CLI_ACCESS_TOKEN", "not-a-jwt")
+        .args(["--config", path.to_str().unwrap()])
+        .args(["auth", "switch", "customer", "--output", "json"])
+        .assert()
+        .code(10)
+        .stdout(predicate::str::contains("\"success\": false"));
 }

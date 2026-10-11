@@ -294,6 +294,16 @@ async fn download_item(
         None => unique_path(dir.join(default_filename(message_id, item, content_type.as_deref()))),
     };
 
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                TeamsError::InvalidInput(format!(
+                    "Failed to create directory '{}': {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+    }
     write_atomically(&target, &bytes)?;
 
     Ok(serde_json::json!({
@@ -376,29 +386,44 @@ fn unique_path(candidate: PathBuf) -> PathBuf {
         .expect("unbounded suffix search always terminates")
 }
 
-/// Write to `<path>.part` then rename, so a failed download never leaves a
-/// truncated file at the final path.
-fn write_atomically(target: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = target.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                TeamsError::InvalidInput(format!(
-                    "Failed to create directory '{}': {e}",
-                    parent.display()
-                ))
-            })?;
-        }
+/// Write to a uniquely named, exclusively created temp file beside `target`,
+/// then rename over it. A failed download leaves nothing behind, and an
+/// existing file or symlink at a temp path is never followed or clobbered.
+pub(crate) fn write_atomically(target: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+
+    let fail = |e: std::io::Error| {
+        TeamsError::InvalidInput(format!("Failed to write '{}': {e}", target.display()))
+    };
+    if target.file_name().is_none() {
+        return Err(TeamsError::InvalidInput(
+            "Target path has no filename".into(),
+        ));
     }
-    let filename = target
-        .file_name()
-        .ok_or_else(|| TeamsError::InvalidInput("Target path has no filename".into()))?;
-    let part = target.with_file_name(format!("{}.part", filename.to_string_lossy()));
-    std::fs::write(&part, bytes).map_err(|e| {
-        TeamsError::InvalidInput(format!("Failed to write '{}': {e}", part.display()))
-    })?;
-    std::fs::rename(&part, target).map_err(|e| {
-        TeamsError::InvalidInput(format!("Failed to rename to '{}': {e}", target.display()))
-    })
+    let dir = match target.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".teams-download-").suffix(".part");
+    // Keep an existing target's mode exactly; otherwise 0666 less umask, as a
+    // plain create would, not tempfile's 0600.
+    #[cfg(unix)]
+    let existing = std::fs::metadata(target).ok().map(|m| m.permissions());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = existing.as_ref().map_or(0o666, |p| p.mode() & 0o777);
+        builder.permissions(std::fs::Permissions::from_mode(mode));
+    }
+    let mut tmp = builder.tempfile_in(dir).map_err(fail)?;
+    #[cfg(unix)]
+    if let Some(perms) = existing {
+        tmp.as_file().set_permissions(perms).map_err(fail)?;
+    }
+    tmp.write_all(bytes).map_err(fail)?;
+    tmp.persist(target).map_err(|e| fail(e.error))?;
+    Ok(())
 }
 
 fn augment_error(err: TeamsError, note: &str) -> TeamsError {
@@ -461,6 +486,122 @@ mod tests {
         write_atomically(&no_extension, b"more").unwrap();
         assert_eq!(std::fs::read(&no_extension).unwrap(), b"more");
         assert!(!dir.path().join("out.part").exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomically_ignores_symlink_at_old_part_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"keep").unwrap();
+        let part = dir.path().join("out.png.part");
+        std::os::unix::fs::symlink(&victim, &part).unwrap();
+        let target = dir.path().join("out.png");
+
+        write_atomically(&target, b"payload").unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"payload");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        assert!(std::fs::symlink_metadata(&part)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomically_keeps_default_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("plain");
+        std::fs::write(&plain, b"x").unwrap();
+        let target = dir.path().join("out.png");
+
+        write_atomically(&target, b"payload").unwrap();
+
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&target), mode(&plain));
+
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        write_atomically(&target, b"again").unwrap();
+        assert_eq!(mode(&target), 0o600);
+
+        // Bits the umask would strip on create survive a replace.
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o664)).unwrap();
+        write_atomically(&target, b"third").unwrap();
+        assert_eq!(mode(&target), 0o664);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomically_accepts_long_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join(format!("{}.bin", "a".repeat(246)));
+        write_atomically(&target, b"payload").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn write_atomically_leaves_stray_part_file_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("out.png.part");
+        std::fs::write(&part, b"stray").unwrap();
+        let target = dir.path().join("out.png");
+
+        write_atomically(&target, b"payload").unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"payload");
+        assert_eq!(std::fs::read(&part).unwrap(), b"stray");
+    }
+
+    #[test]
+    fn write_atomically_failure_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory at the target makes the final rename fail after the write.
+        let target = dir.path().join("out.png");
+        std::fs::create_dir(&target).unwrap();
+
+        assert!(write_atomically(&target, b"payload").is_err());
+
+        assert!(target.is_dir());
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, vec![std::ffi::OsString::from("out.png")]);
+    }
+
+    #[test]
+    fn write_atomically_concurrent_writers_leave_one_whole_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out.bin");
+        let payloads = [vec![b'a'; 4 << 20], vec![b'b'; 4 << 20]];
+        let barrier = std::sync::Barrier::new(payloads.len());
+
+        std::thread::scope(|s| {
+            let handles: Vec<_> = payloads
+                .iter()
+                .map(|p| {
+                    let (target, barrier) = (&target, &barrier);
+                    s.spawn(move || {
+                        barrier.wait();
+                        write_atomically(target, p)
+                    })
+                })
+                .collect();
+            let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+            // Windows can refuse a rename onto a file another rename is replacing
+            // ("Access is denied"); one writer may lose there. Elsewhere both win.
+            let failed = results.iter().filter(|r| r.is_err()).count();
+            assert!(failed == 0 || (cfg!(windows) && failed == 1), "{results:?}");
+        });
+
+        // Either way the target is one whole payload, never a mix, and the
+        // losing writer's temp file is gone.
+        let written = std::fs::read(&target).unwrap();
+        assert!(payloads.contains(&written));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]

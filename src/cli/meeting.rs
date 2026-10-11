@@ -86,6 +86,7 @@ pub async fn run(
             if format == OutputFormat::Human {
                 let headers = vec!["ID", "Subject", "Start", "End", "Join URL"];
                 let rows: Vec<Vec<String>> = meetings
+                    .items
                     .iter()
                     .map(|m| {
                         vec![
@@ -98,8 +99,9 @@ pub async fn run(
                     })
                     .collect();
                 output::table::print_table(headers, rows);
+                output::print_more_hint(&meetings);
             } else {
-                output::print_success_list(format, &meetings, start);
+                output::print_success_page(format, &meetings, start);
             }
             Ok(())
         }
@@ -183,6 +185,7 @@ pub async fn run(
                 if format == OutputFormat::Human {
                     let headers = vec!["ID", "Email", "Role", "Attendance (s)"];
                     let rows: Vec<Vec<String>> = records
+                        .items
                         .iter()
                         .map(|r| {
                             vec![
@@ -196,8 +199,9 @@ pub async fn run(
                         })
                         .collect();
                     output::table::print_table(headers, rows);
+                    output::print_more_hint(&records);
                 } else {
-                    output::print_success_list(format, &records, start);
+                    output::print_success_page(format, &records, start);
                 }
             } else {
                 let reports =
@@ -206,6 +210,7 @@ pub async fn run(
                 if format == OutputFormat::Human {
                     let headers = vec!["Report ID", "Participants", "Start", "End"];
                     let rows: Vec<Vec<String>> = reports
+                        .items
                         .iter()
                         .map(|r| {
                             vec![
@@ -219,8 +224,9 @@ pub async fn run(
                         })
                         .collect();
                     output::table::print_table(headers, rows);
+                    output::print_more_hint(&reports);
                 } else {
-                    output::print_success_list(format, &reports, start);
+                    output::print_success_page(format, &reports, start);
                 }
             }
             Ok(())

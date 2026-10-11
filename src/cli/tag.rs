@@ -91,6 +91,7 @@ pub async fn run(
             if format == OutputFormat::Human {
                 let headers = vec!["ID", "Display Name", "Description", "Member Count"];
                 let rows: Vec<Vec<String>> = tags
+                    .items
                     .iter()
                     .map(|t| {
                         vec![
@@ -102,8 +103,9 @@ pub async fn run(
                     })
                     .collect();
                 output::table::print_table(headers, rows);
+                output::print_more_hint(&tags);
             } else {
-                output::print_success_list(format, &tags, start);
+                output::print_success_page(format, &tags, start);
             }
             Ok(())
         }

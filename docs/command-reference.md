@@ -15,7 +15,7 @@ teams [OPTIONS] <COMMAND>
 | `-v, --verbose` | Increase stderr logging. Repeat for debug/trace. |
 | `--no-color` | Disable ANSI colors. |
 | `--config <path>` | Use an explicit config path. |
-| `--profile <name>` | Use a named credential profile. |
+| `--profile <name>` | Use a named credential profile. New names: 1-64 of `A-Z a-z 0-9 . _ -`. |
 | `--timeout <seconds>` | Override request timeout. |
 | `--retry <count>` | Override retry attempts. |
 | `--page-size <count>` | Page size for paginated list operations. |

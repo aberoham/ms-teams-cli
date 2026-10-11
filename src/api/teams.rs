@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::models::common::PageResponse;
+use crate::models::common::Page;
 use crate::models::member::{AddMemberRequest, ConversationMember};
 use crate::models::team::{Team, TeamCloneRequest, TeamCreateRequest, TeamUpdateRequest};
 
@@ -9,15 +9,10 @@ use super::endpoints;
 pub async fn list_joined_teams(
     client: &GraphClient,
     pagination: &PaginationOpts,
-) -> Result<Vec<Team>> {
-    if pagination.all_pages {
-        client
-            .get_all_pages(&endpoints::my_joined_teams(), &[])
-            .await
-    } else {
-        let page: PageResponse<Team> = client.get(&endpoints::my_joined_teams(), &[]).await?;
-        Ok(page.value)
-    }
+) -> Result<Page<Team>> {
+    client
+        .get_paged_without_top(&endpoints::my_joined_teams(), &[], pagination)
+        .await
 }
 
 pub async fn get_team(client: &GraphClient, id: &str) -> Result<Team> {
@@ -62,7 +57,7 @@ pub async fn list_members(
     client: &GraphClient,
     team_id: &str,
     pagination: &PaginationOpts,
-) -> Result<Vec<ConversationMember>> {
+) -> Result<Page<ConversationMember>> {
     client
         .get_paged(&endpoints::team_members(team_id), &[], pagination)
         .await

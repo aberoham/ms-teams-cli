@@ -84,8 +84,8 @@ All Microsoft Graph calls should go through `GraphClient` in `src/api/client.rs`
 
 - Bearer token injection.
 - Request timeout from config.
-- Retries for network failures, HTTP 429, and HTTP 5xx.
-- `Retry-After` handling for rate limits.
+- Retries for network failures, HTTP 429, and HTTP 5xx. A POST is retried only on 429 or when no connection was made, so a write is never sent twice; read-only POSTs use `post_read_only` and retry like a GET.
+- `Retry-After` handling (seconds or HTTP date, capped at 300s) for 429 and retried 5xx.
 - Pagination through `get_paged` and `get_all_pages`.
 - Raw byte helpers for file upload/download.
 
@@ -105,7 +105,7 @@ Most command modules follow this shape:
 6. Call `api::<domain>::...`.
 7. Print through `output::print_success`, `print_success_list`, or a table helper.
 
-For paginated list commands, pass `&PaginationOpts` from `src/cli/mod.rs` and use `client.get_paged` in the API layer.
+For paginated list commands, pass `&PaginationOpts` from `src/cli/mod.rs` and use `client.get_paged` in the API layer. It returns a `Page`; print it with `output::print_success_page` (and `output::print_more_hint` after a table) so `metadata.has_more`/`next_link` reach the caller.
 
 For new command domains, update:
 

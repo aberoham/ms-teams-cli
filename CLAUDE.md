@@ -61,6 +61,7 @@ Single-crate Rust binary. Key modules:
 
 ### Output Contract
 All commands emit a JSON envelope: `{ "success": bool, "data": ..., "metadata": { "request_id", "timestamp", "duration_ms" } }`.
+Paged list results add `metadata.has_more` and, when true, `metadata.next_link`; human/plain output prints a stderr hint instead.
 When stdout is a TTY, defaults to human-readable table format. When piped, defaults to JSON.
 Plain list columns include keys from every row, with blank cells for absent values. Human message lists include a Subject column; absent message subjects remain omitted in JSON.
 
@@ -78,8 +79,8 @@ CLI flags > env vars (TEAMS_CLI_CLIENT_ID, TEAMS_CLI_CLIENT_SECRET, TEAMS_CLI_TE
 
 ### Graph API Client
 - Chat attachment sharing is best-effort, including recipient lookup failures. Use object IDs only for recipients whose roster tenant matches the sender's; otherwise use email or warn about manual sharing.
-- Automatic retry with exponential backoff on 429/5xx
-- Respects `Retry-After` header for rate limiting
+- Automatic retry with exponential backoff on 429/5xx; a POST only on 429 or a failed connect, unless read-only (`post_read_only`)
+- Respects `Retry-After` header (seconds or HTTP date, capped at 300s)
 - Pagination via `@odata.nextLink` with `--all-pages` flag
 - `$top` parameter for page size control
 

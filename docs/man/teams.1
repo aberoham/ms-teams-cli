@@ -39,6 +39,13 @@ then the configured default profile, then
 .B default.
 An explicit NAME always wins, even when it is the literal
 .B default.
+A new profile's name is 1 to 64 of
+.B A-Z a-z 0-9 . _ -
+(not
+.B .
+or
+.B ..);
+existing profiles keep their names.
 .TP
 .B --timeout SECONDS
 Override Graph request timeout.

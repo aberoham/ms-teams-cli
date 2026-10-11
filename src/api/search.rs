@@ -12,7 +12,9 @@ pub async fn search_messages(
     top: Option<u64>,
 ) -> Result<SearchResponse> {
     let req = SearchRequest::new("chatMessage", query, top.unwrap_or(25));
-    client.post(&endpoints::search_query(), &req).await
+    client
+        .post_read_only(&endpoints::search_query(), &req)
+        .await
 }
 
 pub async fn search_users(
@@ -21,7 +23,9 @@ pub async fn search_users(
     top: Option<u64>,
 ) -> Result<SearchResponse> {
     let req = SearchRequest::new("person", query, top.unwrap_or(25));
-    client.post(&endpoints::search_query(), &req).await
+    client
+        .post_read_only(&endpoints::search_query(), &req)
+        .await
 }
 
 pub async fn search_teams(client: &GraphClient, query: &str) -> Result<Vec<Team>> {

@@ -113,6 +113,7 @@ pub async fn run(
             if format == OutputFormat::Human {
                 let headers = vec!["ID", "Name", "Size", "Type", "Modified"];
                 let rows: Vec<Vec<String>> = files
+                    .items
                     .iter()
                     .map(|f| {
                         let file_type = if f.folder.is_some() { "folder" } else { "file" };
@@ -126,8 +127,9 @@ pub async fn run(
                     })
                     .collect();
                 output::table::print_table(headers, rows);
+                output::print_more_hint(&files);
             } else {
-                output::print_success_list(format, &files, start);
+                output::print_success_page(format, &files, start);
             }
             Ok(())
         }
@@ -205,12 +207,7 @@ pub async fn run(
             let bytes = api::files::download_file(&client, &team, &channel, &file_id).await?;
 
             if let Some(path) = path {
-                std::fs::write(&path, &bytes).map_err(|e| {
-                    crate::error::TeamsError::InvalidInput(format!(
-                        "Failed to write file '{}': {e}",
-                        path
-                    ))
-                })?;
+                super::message_attachments::write_atomically(std::path::Path::new(&path), &bytes)?;
                 if format != OutputFormat::Plain {
                     let start = Instant::now();
                     let result = serde_json::json!({
