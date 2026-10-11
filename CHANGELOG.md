@@ -26,6 +26,24 @@ Fork changes on top of upstream v0.9.0:
 - A POST is no longer replayed after a 5xx or a network failure once sent, which could post a message twice. It fails with exit code 8 or 7 and a hint to check before re-sending. A 429 or a connection that was never made is still retried, and read-only POSTs (`search`, `presence get-batch`) retry as before.
 - A POST answered 2xx whose response body cannot be read or parsed now says Graph performed it and not to re-send, instead of a bare network or parse error.
 
+### Added
+
+- `teams subscribe create --lifecycle-url URL` sets the subscription's `lifecycleNotificationUrl`, which Graph requires for Teams subscriptions longer than one hour.
+- `teams listen --client-state SECRET` (or `TEAMS_CLI_CLIENT_STATE`) drops notifications whose `clientState` is missing or different, with a warning on stderr that does not include either value. Without it, the listener warns at startup that notifications are not authenticated.
+- `teams listen --bind ADDR` chooses the listening address, and `--port 0` picks a free port; the startup line names the address actually bound.
+- Each `teams listen` line now carries every field Graph sent (`subscriptionExpirationDateTime`, `lifecycleEvent`, `encryptedContent` and so on) and `kind`: `lifecycle` when `lifecycleEvent` is present, else `change`. The README's "Running behind a relay" says what a relay should POST and which statuses to retry.
+
+### Changed
+
+- **`teams listen` binds `127.0.0.1` by default instead of `0.0.0.0`.** Pass `--bind 0.0.0.0` to accept connections from other hosts.
+- `teams listen` answers notifications with 202 once they are queued for stdout, instead of 200 after printing, so a slow stdout reader no longer holds the HTTP response; when the queue (8 MiB) is full it answers 503 so the sender retries. Validation requests are answered whatever the queue state. On Ctrl+C or SIGTERM it stops admitting notifications (503) and writes out every one it already acknowledged before exiting; a second signal abandons them, and any acknowledged notification left unwritten, or lost to a closed stdout, is counted on stderr with exit code 1 (previously a closed stdout exited 0).
+- `teams listen` limits bodies to 1 MiB (413), allows 10 seconds for headers and for the body (408), and serves at most 64 connections at once.
+- `teams listen` no longer prints `clientState`.
+
+### Fixed
+
+- `teams listen` on a port already in use exits with code 10 (`CONFIG_ERROR`), naming the address and the OS error, instead of reporting an authentication failure (exit code 3).
+
 ## v0.9.0 - 2026-10-04
 
 ### Added
