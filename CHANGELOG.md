@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- `teams subscribe create --lifecycle-url URL` sets the subscription's `lifecycleNotificationUrl`, which Graph requires for Teams subscriptions longer than one hour.
+
 ## v0.9.0 - 2026-10-04
 
 ### Added
