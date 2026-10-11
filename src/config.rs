@@ -248,8 +248,9 @@ pub fn is_valid_profile_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
-/// Refuse to create a profile under an invalid name. A profile that already
-/// exists, in the config or the token index, keeps its name.
+/// Refuse to create a profile under an invalid name, or under one whose token
+/// file name matches an existing profile's. A profile that already exists, in
+/// the config or the token index, keeps its name.
 pub fn check_new_profile_name(name: &str, config: &ConfigFile) -> Result<()> {
     check_new_profile_name_with(name, config, crate::auth::keyring::list_profiles)
 }
@@ -259,15 +260,30 @@ fn check_new_profile_name_with(
     config: &ConfigFile,
     index: impl FnOnce() -> Result<Vec<String>>,
 ) -> Result<()> {
-    if is_valid_profile_name(name)
-        || config.profiles.contains_key(name)
-        || index()?.iter().any(|p| p == name)
-    {
+    if config.profiles.contains_key(name) {
         return Ok(());
     }
-    Err(TeamsError::InvalidInput(format!(
-        "Invalid profile name '{name}': use A-Z a-z 0-9 . _ - (max {MAX_PROFILE_NAME_LEN}, not . or ..)"
-    )))
+    let indexed = index()?;
+    if indexed.iter().any(|p| p == name) {
+        return Ok(());
+    }
+    if !is_valid_profile_name(name) {
+        return Err(TeamsError::InvalidInput(format!(
+            "Invalid profile name '{name}': use A-Z a-z 0-9 . _ - (max {MAX_PROFILE_NAME_LEN}, not . or ..)"
+        )));
+    }
+    let file_name = crate::auth::keyring::file_store_name(name);
+    if let Some(other) = config
+        .profiles
+        .keys()
+        .chain(&indexed)
+        .find(|p| crate::auth::keyring::file_store_name(p) == file_name)
+    {
+        return Err(TeamsError::InvalidInput(format!(
+            "Profile name '{name}' would share a token file with profile '{other}'; choose another"
+        )));
+    }
+    Ok(())
 }
 
 pub fn resolve_client_id(
@@ -698,9 +714,27 @@ scopes = "User.Read People.Read offline_access"
     fn check_new_profile_name_reports_an_unreadable_index() {
         let config = ConfigFile::default();
         let unreadable = || Err(TeamsError::KeyringError("denied".into()));
-        let err = check_new_profile_name_with("other/b", &config, unreadable).unwrap_err();
-        assert_eq!(err.exit_code(), 10);
-        check_new_profile_name_with("valid", &config, || panic!("index read")).unwrap();
+        for name in ["other/b", "valid"] {
+            let err = check_new_profile_name_with(name, &config, unreadable).unwrap_err();
+            assert_eq!(err.exit_code(), 10);
+        }
+    }
+
+    #[test]
+    fn check_new_profile_name_refuses_a_shared_token_file() {
+        let mut config = ConfigFile::default();
+        let legacy = || Ok(vec!["customer/a".to_string()]);
+        let err = check_new_profile_name_with("customer.a", &config, legacy).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.to_string().contains("customer/a"), "{err}");
+        check_new_profile_name_with("customer.b", &config, legacy).unwrap();
+
+        config
+            .profiles
+            .insert("customer:a".into(), ProfileConfig::default());
+        let err =
+            check_new_profile_name_with("customer.a", &config, || Ok(Vec::new())).unwrap_err();
+        assert!(err.to_string().contains("customer:a"), "{err}");
     }
 
     #[test]

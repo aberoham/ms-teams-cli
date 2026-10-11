@@ -181,13 +181,20 @@ struct FileStore {
     dir: PathBuf,
 }
 
+/// The file name the file token store uses for `key`. It maps `:`, `/` and
+/// `\\` to `.`, so distinct keys can share a name; new profile names are
+/// checked against it (`config::check_new_profile_name`).
+pub(crate) fn file_store_name(key: &str) -> String {
+    key.replace([':', '/', '\\'], ".")
+}
+
 impl FileStore {
     fn new(dir: PathBuf) -> Self {
         Self { dir }
     }
 
     fn path(&self, key: &str) -> PathBuf {
-        self.dir.join(key.replace([':', '/', '\\'], "."))
+        self.dir.join(file_store_name(key))
     }
 
     fn ensure_dir(&self) -> Result<()> {
