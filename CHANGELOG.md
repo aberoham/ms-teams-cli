@@ -14,6 +14,7 @@ Fork changes on top of upstream v0.9.0:
 - `teams listen --bind ADDR` chooses the listening address, and `--port 0` picks a free port; the startup line names the address actually bound.
 - Each `teams listen` line now carries every field Graph sent (`subscriptionExpirationDateTime`, `lifecycleEvent`, `encryptedContent` and so on) and `kind`: `lifecycle` when `lifecycleEvent` is present, else `change`. The README's "Running behind a relay" says what a relay should POST and which statuses to retry.
 - List commands without `--all-pages` report whether the result is complete: JSON `metadata.has_more`, plus `metadata.next_link` (Graph's `@odata.nextLink`) when more pages exist. Previously a truncated page looked identical to a complete collection. With `--all-pages`, `has_more` is false. `data` is unchanged. Human and plain output print "More results available; use --all-pages" on stderr.
+- `teams message attachments delete (--chat C | --team T --channel CH [--reply R]) --message M [--index N] --yes` deletes files attached with `message send --attach` from the sender's OneDrive. Each `reference` attachment is resolved through Graph's shares API and deleted only when it is in the caller's own drive; inline images, other people's files and channel files are skipped with a reason. A file already gone counts as deleted. The message and its file card are left as they are; `message delete` is separate.
 
 ### Changed
 
@@ -38,10 +39,6 @@ Fork changes on top of upstream v0.9.0:
 - A POST answered 2xx whose response body cannot be read or parsed now says Graph performed it and not to re-send, instead of a bare network or parse error.
 - `teams listen` on a port already in use exits with code 10 (`CONFIG_ERROR`), naming the address and the OS error, instead of reporting an authentication failure (exit code 3).
 - `message attachments download` and `file download --path` write through a uniquely named, exclusively created temp file in the target directory, then rename it into place. Attachments used a fixed `<target>.part`, so a symlink there redirected the write, a stray `.part` was clobbered, and concurrent downloads to one target shared a temp file; `file download` wrote in place, through any symlink at the target, and left a truncated file on failure; a symlink at the target is now replaced. A failed write now leaves no temp file. An existing target is still overwritten and keeps its mode, and `message attachments download --path -` still streams to stdout.
-
-### Added
-
-- `teams message attachments delete (--chat C | --team T --channel CH [--reply R]) --message M [--index N] --yes` deletes files attached with `message send --attach` from the sender's OneDrive. Each `reference` attachment is resolved through Graph's shares API and deleted only when it is in the caller's own drive; inline images, other people's files and channel files are skipped with a reason. A file already gone counts as deleted. The message and its file card are left as they are; `message delete` is separate.
 
 ## v0.9.0 - 2026-10-04
 
