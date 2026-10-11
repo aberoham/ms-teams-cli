@@ -6,6 +6,20 @@
 
 - `--redirect-uri`, `TEAMS_CLI_REDIRECT_URI` and the profile's `redirect_uri` select the browser login's redirect URI for `auth login`, `auth consent-url` and `auth doctor`. The login listens on the URI's host and port (both loopback addresses for `localhost`) for a request to the URI's path carrying the login's `state`; the flag is saved to the profile with the IDs. A redirect URI without a port gets a free port from the OS at each login, as MSAL does; the identity platform allows this because it ignores the port of a localhost redirect URI, so `--redirect-uri http://localhost` works for an app registered that way.
 - `teams subscribe create --lifecycle-url URL` sets the subscription's `lifecycleNotificationUrl`, which Graph requires for Teams subscriptions longer than one hour.
+- `teams listen --client-state SECRET` (or `TEAMS_CLI_CLIENT_STATE`) drops notifications whose `clientState` is missing or different, with a warning on stderr that does not include either value. Without it, the listener warns at startup that notifications are not authenticated.
+- `teams listen --bind ADDR` chooses the listening address, and `--port 0` picks a free port; the startup line names the address actually bound.
+- Each `teams listen` line now carries every field Graph sent (`subscriptionExpirationDateTime`, `lifecycleEvent`, `encryptedContent` and so on) and `kind`: `lifecycle` when `lifecycleEvent` is present, else `change`. The README's "Running behind a relay" says what a relay should POST and which statuses to retry.
+
+### Changed
+
+- **`teams listen` binds `127.0.0.1` by default instead of `0.0.0.0`.** Pass `--bind 0.0.0.0` to accept connections from other hosts.
+- `teams listen` answers notifications with 202 once they are queued for stdout, instead of 200 after printing, so a slow stdout reader no longer holds the HTTP response; when the queue (8 MiB) is full it answers 503 so the sender retries. Validation requests are answered whatever the queue state.
+- `teams listen` limits bodies to 1 MiB (413), allows 10 seconds for headers and for the body (408), and serves at most 64 connections at once.
+- `teams listen` no longer prints `clientState`.
+
+### Fixed
+
+- `teams listen` on a port already in use exits with code 10 (`CONFIG_ERROR`), naming the address and the OS error, instead of reporting an authentication failure (exit code 3).
 
 ### Changed
 

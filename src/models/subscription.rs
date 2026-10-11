@@ -64,6 +64,29 @@ pub struct ChangeNotification {
     pub tenant_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle_event: Option<String>,
+    /// Fields not modelled above, kept so output carries everything Graph sent.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ChangeNotification {
+    /// Output form: every field Graph sent except `clientState`, plus `kind`
+    /// (`lifecycle` when `lifecycleEvent` is present, else `change`).
+    pub fn to_output(&self) -> serde_json::Value {
+        let mut value = serde_json::to_value(self).unwrap_or_default();
+        if let Some(map) = value.as_object_mut() {
+            map.remove("clientState");
+            let kind = if self.lifecycle_event.is_some() {
+                "lifecycle"
+            } else {
+                "change"
+            };
+            map.insert("kind".into(), kind.into());
+        }
+        value
+    }
 }
 
 #[cfg(test)]
@@ -134,5 +157,39 @@ mod tests {
         assert_eq!(notif.subscription_id.as_deref(), Some("sub-1"));
         assert_eq!(notif.change_type.as_deref(), Some("created"));
         assert_eq!(notif.tenant_id.as_deref(), Some("tenant-1"));
+    }
+
+    #[test]
+    fn change_notification_output_keeps_unknown_fields_and_drops_client_state() {
+        let notif: ChangeNotification = serde_json::from_str(
+            r#"{
+                "subscriptionId": "sub-1",
+                "changeType": "created",
+                "clientState": "my-secret",
+                "subscriptionExpirationDateTime": "2026-03-15T00:00:00Z",
+                "encryptedContent": {"data": "abc"}
+            }"#,
+        )
+        .unwrap();
+        let out = notif.to_output();
+        assert_eq!(out["kind"], "change");
+        assert_eq!(out["subscriptionId"], "sub-1");
+        assert_eq!(
+            out["subscriptionExpirationDateTime"],
+            "2026-03-15T00:00:00Z"
+        );
+        assert_eq!(out["encryptedContent"]["data"], "abc");
+        assert!(out.get("clientState").is_none());
+    }
+
+    #[test]
+    fn lifecycle_notification_output_is_kind_lifecycle() {
+        let notif: ChangeNotification = serde_json::from_str(
+            r#"{"subscriptionId": "sub-1", "lifecycleEvent": "reauthorizationRequired"}"#,
+        )
+        .unwrap();
+        let out = notif.to_output();
+        assert_eq!(out["kind"], "lifecycle");
+        assert_eq!(out["lifecycleEvent"], "reauthorizationRequired");
     }
 }
