@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- A token store that cannot be read (a locked keychain, a denied prompt, an SSH session) is reported as `KEYRING_ERROR` (exit code 10) with its cause, instead of "Not authenticated" (exit code 3). Only a profile with no stored token is "Not authenticated".
+- A profile index that cannot be read or parsed is an error (exit code 10) instead of an empty list. `auth login` no longer rewrites it to hold only the new profile, orphaning the rest; `auth list` and `auth logout --all` no longer report no profiles as a success.
+
 ## v0.9.0 - 2026-10-04
 
 ### Added
