@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## Unreleased (fork)
+
+Fork changes on top of upstream v0.9.0:
+
+- Release archives carry build provenance attestations; check one with `gh attestation verify <archive> --repo aberoham/ms-teams-cli`.
+- Upstream's stable releases are mirrored as signed, notarized and attested `upstream-vX.Y.Z` releases, built from upstream's own commit. Only releases newer than the newest mirror are built.
 
 ### Fixed
 

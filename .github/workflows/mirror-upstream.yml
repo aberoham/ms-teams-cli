@@ -1,0 +1,77 @@
+name: Mirror upstream release
+
+# Builds each stable osodevops/ms-teams-cli release from upstream's own tagged
+# commit, checked out from upstream's repository, and publishes it here as
+# upstream-vX.Y.Z: signed and notarized for macOS, with provenance
+# attestations and an attested source manifest, for the tap's teams-cli
+# formula. The fork's own work ships separately as vX.Y.Z-alpha.N.
+#
+# Schedules run only from the default branch, which is next, and release.yml
+# refuses a mirror from anywhere else. Signing waits for approval of the
+# release environment, as a tag release does.
+
+on:
+  schedule:
+    # Weekdays, half an hour before the tap's teams-cli updater.
+    - cron: "47 8 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Upstream tag to mirror, vX.Y.Z (empty for the next unmirrored release)
+        type: string
+        required: false
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: mirror-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: osodevops/ms-teams-cli
+
+jobs:
+  find:
+    name: Find an unmirrored upstream release
+    if: github.ref == 'refs/heads/next'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      build: ${{ steps.choose.outputs.build }}
+      source_ref: ${{ steps.choose.outputs.source_ref }}
+      release_tag: ${{ steps.choose.outputs.release_tag }}
+      version_tag: ${{ steps.choose.outputs.version_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # test_mirror_find.py covers the choice; CI runs it.
+      - name: Choose the release
+        id: choose
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: bash .github/scripts/mirror-find.sh
+
+  release:
+    name: Release
+    needs: find
+    if: needs.find.outputs.build == 'true'
+    permissions:
+      contents: write # create the release and upload its assets
+      id-token: write # sign the provenance attestation through Sigstore
+      attestations: write # store the attestation against the repository
+    uses: ./.github/workflows/release.yml
+    # A called workflow sees an environment's secrets only for names the
+    # caller passes down; the release environment then supplies the values.
+    # Without this, signing in release.yml found MACOS_CERTIFICATE_P12_BASE64
+    # empty. The repository holds no repository-level secrets, so nothing
+    # else is exposed.
+    secrets: inherit # zizmor: ignore[secrets-inherit] environment secrets need it; see above
+    with:
+      source_repository: osodevops/ms-teams-cli
+      source_ref: ${{ needs.find.outputs.source_ref }}
+      release_tag: ${{ needs.find.outputs.release_tag }}
+      version_tag: ${{ needs.find.outputs.version_tag }}
