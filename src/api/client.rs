@@ -26,8 +26,12 @@ pub struct GraphClient {
 
 impl GraphClient {
     pub fn new(token: TokenInfo, network: &NetworkConfig) -> Result<Self> {
+        let timeout = Duration::from_secs(network.timeout);
+        // A separate connect timeout makes a stalled connect a connect error, which
+        // proves the request was never sent; the overall timeout alone cannot say.
         let http = Client::builder()
-            .timeout(Duration::from_secs(network.timeout))
+            .connect_timeout(timeout.min(CONNECT_TIMEOUT))
+            .timeout(timeout)
             .build()
             .map_err(TeamsError::NetworkError)?;
 
@@ -607,6 +611,9 @@ async fn decode_json<T: DeserializeOwned>(
     })
 }
 
+/// Longest wait for a connection to Graph.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Longest wait honored from a `Retry-After` header.
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(300);
 
@@ -990,7 +997,11 @@ mod tests {
 
     fn retrying_client(max_retries: u32) -> GraphClient {
         let mut client = test_client();
+        // The connect timeout mirrors production: on Windows a refused port is
+        // retried for about two seconds, and must still end as a connect error.
         client.http = Client::builder()
+            .no_proxy()
+            .connect_timeout(Duration::from_millis(250))
             .timeout(Duration::from_millis(500))
             .build()
             .unwrap();
