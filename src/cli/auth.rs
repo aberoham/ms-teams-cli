@@ -336,6 +336,7 @@ async fn login(
     format: OutputFormat,
 ) -> Result<()> {
     let start = Instant::now();
+    config::check_new_profile_name(profile, config)?;
     let (client_id, tenant_id) = login_registration(&args, config, profile)?;
     let client_secret = if args.client_credentials {
         Some(

@@ -1397,6 +1397,137 @@ fn file_token_store_lists_and_logs_out_a_profile() {
     );
 }
 
+/// A new profile name is limited to `A-Z a-z 0-9 . _ -`: the file token
+/// store maps `/` to `.`, so `customer/a` would share `customer.a`'s token.
+/// Each way a name can be created refuses it as invalid input and writes
+/// nothing.
+#[test]
+fn an_invalid_new_profile_name_is_refused() {
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let config_path = dir.path().join("config.toml");
+    let config = config_path.to_str().unwrap();
+    let refused = |cmd: &mut Command| {
+        cmd.args(["--config", config, "--output", "json"])
+            .assert()
+            .code(2)
+            .stdout(
+                predicate::str::contains("INVALID_INPUT")
+                    .and(predicate::str::contains("Invalid profile name")),
+            );
+    };
+    let login = ["auth", "login", "--client-credentials"];
+    let long = "x".repeat(65);
+    for name in ["customer/a", "a:b", "..", "", long.as_str()] {
+        refused(teams().args(["--profile", name]).args(login));
+    }
+    refused(teams().env("TEAMS_CLI_PROFILE", "customer/a").args(login));
+    refused(teams().args(["config", "set", "profiles.customer/a.tenant_id", "t"]));
+    refused(teams().args(["config", "set", "default.profile", "customer/a"]));
+    assert!(!config_path.exists());
+}
+
+/// A valid name gets past the name check; this login then stops for want of
+/// a client secret, before any network call.
+#[test]
+fn a_valid_new_profile_name_is_accepted() {
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let config_path = dir.path().join("config.toml");
+    let config = config_path.to_str().unwrap();
+    for name in ["customer.a", "work_2-B"] {
+        teams()
+            .args(["--config", config, "--output", "json", "--profile", name])
+            .args(["auth", "login", "--client-credentials"])
+            .args(["--client-id", "app-1", "--tenant-id", "tenant-1"])
+            .assert()
+            .code(2)
+            .stdout(predicate::str::contains("Client secret is required"));
+    }
+    teams()
+        .args(["--config", config, "--output", "json"])
+        .args(["config", "set", "profiles.customer-a.tenant_id", "t"])
+        .assert()
+        .success();
+}
+
+/// A profile created before names were limited keeps working: it loads from
+/// the config, can be edited and signed in to again.
+#[test]
+fn a_legacy_profile_name_in_the_config_keeps_working() {
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let config_path = dir.path().join("config.toml");
+    let config = config_path.to_str().unwrap();
+    fs::write(
+        &config_path,
+        r#"[default]
+profile = "customer/a"
+
+[profiles."customer/a"]
+client_id = "app-1"
+tenant_id = "tenant-1"
+"#,
+    )
+    .unwrap();
+    teams()
+        .args(["--config", config, "--output", "json", "config", "profiles"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("customer/a"));
+    teams()
+        .args(["--config", config, "--output", "json"])
+        .args(["config", "set", "profiles.customer/a.tenant_id", "tenant-2"])
+        .assert()
+        .success();
+    // Resolved from `default.profile`, and again given explicitly.
+    for profile in [&[][..], &["--profile", "customer/a"][..]] {
+        teams()
+            .args(["--config", config, "--output", "json"])
+            .args(profile)
+            .args(["auth", "login", "--client-credentials"])
+            .assert()
+            .code(2)
+            .stdout(predicate::str::contains("Client secret is required"));
+    }
+}
+
+/// A legacy name known only from the file store's profile index also keeps
+/// working. Not on Windows, whose config directory ignores `HOME`.
+#[cfg(not(windows))]
+#[test]
+fn a_legacy_profile_name_in_the_token_index_keeps_working() {
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let file_store = || {
+        let mut cmd = teams();
+        cmd.env_remove("TEAMS_CLI_DISABLE_KEYRING")
+            .env("TEAMS_CLI_TOKEN_STORE", "file")
+            .env("HOME", home.path())
+            .env("XDG_CONFIG_HOME", home.path());
+        cmd
+    };
+    let output = file_store()
+        .args(["config", "path", "--output", "json"])
+        .output()
+        .unwrap();
+    let output: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let config_path = std::path::PathBuf::from(output["data"]["path"].as_str().unwrap());
+    assert!(config_path.starts_with(home.path()));
+    let tokens = config_path.parent().unwrap().join("tokens");
+    fs::create_dir_all(&tokens).unwrap();
+    fs::write(tokens.join("profile-index"), r#"["customer/a"]"#).unwrap();
+
+    for (name, expected) in [
+        ("customer/a", "Client secret is required"),
+        ("customer/b", "Invalid profile name"),
+    ] {
+        file_store()
+            .args(["--profile", name, "--output", "json"])
+            .args(["auth", "login", "--client-credentials"])
+            .args(["--client-id", "app-1", "--tenant-id", "tenant-1"])
+            .assert()
+            .code(2)
+            .stdout(predicate::str::contains(expected));
+    }
+}
+
 /// `--help` names the environment variable a client secret can come from, but
 /// never prints the secret itself, which would put it in a terminal
 /// scrollback, a pasted bug report or an agent transcript.
