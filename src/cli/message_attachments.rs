@@ -590,11 +590,15 @@ mod tests {
                     })
                 })
                 .collect();
-            for h in handles {
-                h.join().unwrap().unwrap();
-            }
+            let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+            // Windows can refuse a rename onto a file another rename is replacing
+            // ("Access is denied"); one writer may lose there. Elsewhere both win.
+            let failed = results.iter().filter(|r| r.is_err()).count();
+            assert!(failed == 0 || (cfg!(windows) && failed == 1), "{results:?}");
         });
 
+        // Either way the target is one whole payload, never a mix, and the
+        // losing writer's temp file is gone.
         let written = std::fs::read(&target).unwrap();
         assert!(payloads.contains(&written));
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
