@@ -48,9 +48,27 @@ pub async fn resolve_token(profile: &str) -> Result<TokenInfo> {
                 Err(e) => handle_refresh_failure(&info, e),
             }
         }
-        Err(_) => Err(TeamsError::AuthError(
-            "Not authenticated. Run `teams auth login` first.".into(),
-        )),
+        Err(_) => Err(not_authenticated()),
+    }
+}
+
+/// The error for a profile with no stored token. A build outside the release
+/// storage namespace also names the namespace it looked in, because a token
+/// stored by an installed release is deliberately out of its reach, and
+/// "not authenticated" alone reads as if the login had been lost.
+fn not_authenticated() -> TeamsError {
+    TeamsError::AuthError(not_authenticated_message(crate::config::NAMESPACE))
+}
+
+fn not_authenticated_message(namespace: &str) -> String {
+    let message = "Not authenticated. Run `teams auth login` first.";
+    if namespace == crate::config::RELEASE_NAMESPACE {
+        message.to_string()
+    } else {
+        format!(
+            "{message} This build keeps its tokens in storage namespace \
+             `{namespace}`, apart from an installed release."
+        )
     }
 }
 
@@ -104,9 +122,7 @@ pub async fn refresh_token_with_scopes(
     profile: &str,
     scope: Option<&str>,
 ) -> Result<(TokenInfo, String)> {
-    let info = keyring::get_token(profile).map_err(|_| {
-        TeamsError::AuthError("Not authenticated. Run `teams auth login` first.".into())
-    })?;
+    let info = keyring::get_token(profile).map_err(|_| not_authenticated())?;
 
     if info.refresh_token.is_none() {
         return Err(TeamsError::AuthError(
@@ -194,6 +210,19 @@ pub fn require_delegated_token(token: &TokenInfo, operation: &str) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn not_authenticated_names_only_a_non_release_namespace() {
+        assert_eq!(
+            not_authenticated_message(crate::config::RELEASE_NAMESPACE),
+            "Not authenticated. Run `teams auth login` first."
+        );
+        assert_eq!(
+            not_authenticated_message("teams-cli-dev"),
+            "Not authenticated. Run `teams auth login` first. This build keeps its \
+             tokens in storage namespace `teams-cli-dev`, apart from an installed release."
+        );
+    }
 
     fn token_with(
         expires_at: Option<chrono::DateTime<Utc>>,

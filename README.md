@@ -202,6 +202,11 @@ teams auth login --client-id <client-id> --tenant-id <tenant-id>
 teams auth login --device-code --client-id <client-id> --tenant-id <tenant-id>
 ```
 
+A delegated login saves `--client-id` and `--tenant-id` to the profile once it
+succeeds, so the profile's next `teams auth login` reuses that app registration
+instead of the built-in one. Environment variables and client credentials
+logins are never saved; see [docs/auth.md](docs/auth.md).
+
 Use **client credentials** only for commands backed by Graph application
 permissions, such as supported read/admin automation. Do not use this as the
 primary model for sending normal Teams messages:
@@ -217,7 +222,8 @@ teams auth login --client-credentials
 export TEAMS_CLI_ACCESS_TOKEN=<access-token>
 teams team list  # no login step needed
 
-# Explicit flags
+# Explicit flags. A secret passed this way shows in process listings and
+# shell history, so prefer TEAMS_CLI_CLIENT_SECRET outside a throwaway shell
 teams auth login --client-credentials \
   --client-id <client-id> --client-secret <client-secret> --tenant-id <tenant-id>
 ```

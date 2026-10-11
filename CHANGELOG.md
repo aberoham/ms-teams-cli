@@ -1,26 +1,26 @@
 # Changelog
 
-## v0.8.1-alpha.1 - 2026-09-29
+## Unreleased (fork)
 
-Fork prerelease: upstream v0.8.0 with #109, #110 and #111, which are listed under Unreleased below, and:
+Fork changes on top of upstream v0.9.0:
 
 - Release archives carry build provenance attestations; check one with `gh attestation verify <archive> --repo aberoham/ms-teams-cli`.
-- Upstream's stable releases are mirrored as signed, notarized and attested `upstream-vX.Y.Z` releases, built from upstream's own commit.
+- Upstream's stable releases are mirrored as signed, notarized and attested `upstream-vX.Y.Z` releases, built from upstream's own commit. Only releases newer than the newest mirror are built.
 
-## Unreleased
+## v0.9.0 - 2026-10-04
 
 ### Added
 
 - `teams --version` names the storage namespace of any build that does not use the release namespace `teams-cli`, and `teams config path` reports `namespace` in every build.
-- `teams auth login --client-id X --tenant-id Y` saves both IDs to the profile's `client_id` and `tenant_id` in the config file once the login succeeds, so the next login for that profile signs in through the same app registration instead of falling back to the built-in app. Only those two keys are edited, so comments and other settings survive, and the file is replaced atomically. Saving is best effort: if the write fails, the login still succeeds with a warning. `TEAMS_CLI_CLIENT_ID` and `TEAMS_CLI_TENANT_ID` still apply but are not saved. Login prints the application and tenant it signs in through, and where each came from, on standard error, and its output includes `client_id`, `tenant_id` and `saved_to_config`. The client secret is never saved.
+- A delegated `teams auth login --client-id X --tenant-id Y` (browser or device code) saves both IDs to the profile's `client_id` and `tenant_id` in the config file once the login succeeds, so the next login for that profile signs in through the same app registration instead of falling back to the built-in app. Only those two keys are edited, so comments and other settings survive, and the file is replaced atomically. Saving is best effort: if the write fails, the login still succeeds with a warning. `TEAMS_CLI_CLIENT_ID` and `TEAMS_CLI_TENANT_ID` still apply but are not saved, and a client credentials login saves nothing, so its confidential app never becomes the profile's delegated one. Login prints the application and tenant it signs in through, and where each came from, on standard error, and its output includes `client_id`, `tenant_id` and `saved_to_config`. The client secret is never saved.
 
 ### Changed
 
-- Debug builds from source keep their tokens under the keyring service `teams-cli-dev` and their config in a `teams-cli-dev` directory, so by default they no longer read or rewrite an installed release's keychain items or config file. Release builds keep `teams-cli`, and existing installs need no action. `TEAMS_CLI_BUILD_NAMESPACE`, set at compile time, chooses another namespace. A developer who signed in with a debug build before this change signs in once more.
+- Debug builds from source keep their tokens under the keyring service `teams-cli-dev` and their config in a `teams-cli-dev` directory, so by default they no longer read or rewrite an installed release's keychain items or config file. Release builds keep `teams-cli`, and existing installs need no action. `TEAMS_CLI_BUILD_NAMESPACE`, set at compile time, chooses another namespace. A developer who signed in with a debug build before this change signs in once more, and a command that finds no token in such a build names the namespace it looked in.
 
 ### Fixed
 
-- `teams auth login --help` no longer prints the value of `TEAMS_CLI_CLIENT_SECRET` when it is set. The help still names the variable.
+- `teams auth login --help` no longer prints the value of `TEAMS_CLI_CLIENT_SECRET` when it is set. The help still names the variable, and now recommends it over `--client-secret`, whose value shows in process listings and shell history.
 
 ## v0.8.0 - 2026-09-29
 

@@ -49,6 +49,7 @@ Required:
 
 - Clean, reviewed diff.
 - All local Rust checks pass.
+- `cargo build --release` produces a binary whose `teams --version` prints only the version, with no storage namespace, so the release keeps the `teams-cli` keyring service and config directory. A release profile that enabled `debug-assertions` would otherwise move every user to `teams-cli-dev` and make them appear signed out.
 - CLI help matches docs and man pages.
 - Man pages lint clean.
 - Generated screenshots, Playwright snapshots, and local temp files are not committed.

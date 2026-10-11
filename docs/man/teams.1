@@ -1,4 +1,4 @@
-.TH TEAMS 1 "September 29, 2026" "teams-cli 0.8.0" "User Commands"
+.TH TEAMS 1 "October 4, 2026" "teams-cli 0.9.0" "User Commands"
 .SH NAME
 teams \- Microsoft Teams CLI for Microsoft Graph automation
 .SH SYNOPSIS
@@ -71,6 +71,12 @@ registrations can still be selected with
 .B --client-id
 and
 .B --tenant-id.
+A successful delegated login saves those two flags to the profile's
+.B client_id
+and
+.B tenant_id,
+so the profile's next login reuses them; values from the environment, and a
+client credentials login, are never saved.
 Client credentials always require explicit customer app credentials.
 Credential resolution for explicit client ID and tenant ID is CLI flag,
 environment variable, then config profile. Client secret resolution is CLI
@@ -358,6 +364,9 @@ Azure AD application client ID.
 .TP
 .B TEAMS_CLI_CLIENT_SECRET
 Azure AD client secret for client credentials auth.
+Prefer it to
+.B --client-secret,
+whose value shows in process listings and shell history.
 .TP
 .B TEAMS_CLI_TENANT_ID
 Azure AD tenant ID.

@@ -1399,6 +1399,22 @@ fn file_token_store_lists_and_logs_out_a_profile() {
     );
 }
 
+/// `--help` names the environment variable a client secret can come from, but
+/// never prints the secret itself, which would put it in a terminal
+/// scrollback, a pasted bug report or an agent transcript.
+#[test]
+fn login_help_does_not_print_the_client_secret() {
+    teams()
+        .env("TEAMS_CLI_CLIENT_SECRET", "sentinel-secret-value")
+        .args(["auth", "login", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("TEAMS_CLI_CLIENT_SECRET")
+                .and(predicate::str::contains("sentinel-secret-value").not()),
+        );
+}
+
 /// The integration tests run the binary cargo built for them, so its storage
 /// namespace follows the same rule as the crate: the build-time override if
 /// one is set, otherwise the development namespace for a debug build.
@@ -1440,6 +1456,26 @@ fn config_path_reports_the_storage_namespace() {
     assert_eq!(path.parent().unwrap().file_name().unwrap(), namespace);
 }
 
+/// A command that finds no token names the storage namespace it looked in when
+/// that is not the release one, so a developer whose debug build cannot see
+/// the installed release's login is told why instead of only "log in".
+#[test]
+fn missing_token_names_a_non_release_storage_namespace() {
+    let namespace = expected_namespace();
+    let result = teams()
+        .args(["user", "me", "--output", "json"])
+        .assert()
+        .code(3);
+    let output: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    let message = output["error"]["message"].as_str().unwrap();
+    assert!(message.contains("Not authenticated."), "{message}");
+    assert_eq!(
+        message.contains(&format!("storage namespace `{namespace}`")),
+        namespace != "teams-cli",
+        "{message}"
+    );
+}
+
 /// The client and tenant IDs are saved only after a login succeeds. A login
 /// refused before it signs in, here for want of a client secret, leaves the
 /// config file untouched.
@@ -1456,20 +1492,4 @@ fn a_failed_login_does_not_save_the_given_ids() {
         .code(2)
         .stdout(predicate::str::contains("Client secret is required"));
     assert!(!config_path.exists());
-}
-
-/// `--help` names the environment variable a client secret can come from, but
-/// never prints the secret itself, which would put it in a terminal
-/// scrollback, a pasted bug report or an agent transcript.
-#[test]
-fn login_help_does_not_print_the_client_secret() {
-    teams()
-        .env("TEAMS_CLI_CLIENT_SECRET", "sentinel-secret-value")
-        .args(["auth", "login", "--help"])
-        .assert()
-        .success()
-        .stdout(
-            predicate::str::contains("TEAMS_CLI_CLIENT_SECRET")
-                .and(predicate::str::contains("sentinel-secret-value").not()),
-        );
 }
