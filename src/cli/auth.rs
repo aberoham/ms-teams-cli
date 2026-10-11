@@ -491,6 +491,8 @@ pub async fn run(
                     let msg = serde_json::json!({
                         "authenticated": true,
                         "profile": profile,
+                        "user": claims.as_ref().and_then(|c| c.user()),
+                        "tenant_id": claims.as_ref().and_then(|c| c.tid.clone()),
                         "expires_at": token.expires_at.map(|e| e.to_rfc3339()),
                         "scope": token.scope,
                         "token_diagnostics": token_diagnostics(claims.as_ref()),
@@ -499,10 +501,14 @@ pub async fn run(
                     output::print_success(format, &msg, start);
                     Ok(())
                 }
-                Err(_) => {
+                // A token store that cannot be read is not "signed out"; report it as
+                // every other command does (exit 10).
+                Err(e @ TeamsError::KeyringError(_)) => Err(e),
+                Err(e) => {
                     let msg = serde_json::json!({
                         "authenticated": false,
                         "profile": profile,
+                        "reason": e.to_string(),
                     });
                     output::print_success(format, &msg, start);
                     std::process::exit(1);
