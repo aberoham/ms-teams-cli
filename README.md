@@ -596,6 +596,7 @@ teams subscribe create \
   --resource "/teams/{team-id}/channels/{channel-id}/messages" \
   --change-type created,updated \
   --webhook-url https://your-endpoint/webhook
+# Over one hour, Graph also needs --lifecycle-url https://your-endpoint/lifecycle
 teams subscribe list
 teams subscribe renew <subscription-id> [--expiration <datetime>]
 teams subscribe delete <subscription-id>
