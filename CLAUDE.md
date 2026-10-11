@@ -78,8 +78,8 @@ CLI flags > env vars (TEAMS_CLI_CLIENT_ID, TEAMS_CLI_CLIENT_SECRET, TEAMS_CLI_TE
 
 ### Graph API Client
 - Chat attachment sharing is best-effort, including recipient lookup failures. Use object IDs only for recipients whose roster tenant matches the sender's; otherwise use email or warn about manual sharing.
-- Automatic retry with exponential backoff on 429/5xx
-- Respects `Retry-After` header for rate limiting
+- Automatic retry with exponential backoff on 429/5xx; a POST only on 429 or a failed connect, unless read-only (`post_read_only`)
+- Respects `Retry-After` header (seconds or HTTP date, capped at 300s)
 - Pagination via `@odata.nextLink` with `--all-pages` flag
 - `$top` parameter for page size control
 

@@ -20,6 +20,10 @@ pub enum TeamsError {
     #[error("Network error: {0}")]
     NetworkError(#[from] reqwest::Error),
 
+    /// A POST failed after it was sent, so Graph may have performed it.
+    #[error("Network error: {0}\n{UNCONFIRMED_HINT}")]
+    UnconfirmedWrite(reqwest::Error),
+
     #[error("API error ({status}): {message}")]
     ApiError { status: u16, message: String },
 
@@ -49,7 +53,7 @@ impl TeamsError {
             Self::PermissionDenied(_) => 4,
             Self::NotFound(_) => 5,
             Self::RateLimited { .. } => 6,
-            Self::NetworkError(_) => 7,
+            Self::NetworkError(_) | Self::UnconfirmedWrite(_) => 7,
             Self::ServerError { .. } => 8,
             Self::ConfigError(_) | Self::KeyringError(_) => 10,
             Self::ApiError { status, .. } => match *status {
@@ -70,7 +74,7 @@ impl TeamsError {
             Self::PermissionDenied(_) => "PERMISSION_DENIED",
             Self::NotFound(_) => "NOT_FOUND",
             Self::RateLimited { .. } => "RATE_LIMITED",
-            Self::NetworkError(_) => "NETWORK_ERROR",
+            Self::NetworkError(_) | Self::UnconfirmedWrite(_) => "NETWORK_ERROR",
             Self::ApiError { .. } => "API_ERROR",
             Self::ServerError { .. } => "SERVER_ERROR",
             Self::InvalidInput(_) => "INVALID_INPUT",
@@ -109,6 +113,10 @@ pub fn describe_with_causes(err: &dyn std::error::Error) -> String {
     }
     message
 }
+
+/// Appended to a failure that leaves a POST's outcome unknown.
+pub const UNCONFIRMED_HINT: &str =
+    "Hint: Graph may have performed this request; check before re-sending.";
 
 pub type Result<T> = std::result::Result<T, TeamsError>;
 

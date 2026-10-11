@@ -107,9 +107,12 @@ Maximum retry count for transient failures.
 .B retry_backoff_base
 Base for exponential backoff delays. Retry delay is calculated as
 .B base^attempt
-for retryable network failures and 5xx errors. HTTP 429 honors the
+for retryable network failures and 5xx errors. HTTP 429 and retried 5xx
+responses honor the
 .B Retry-After
-header when present.
+header when present, capped at 300 seconds. A POST is retried only on 429 or
+when no connection was made, never after it may have reached Graph. Read-only
+POSTs (search, presence batch) retry like GET.
 .SH PROFILES
 Each profile is defined under
 .B [profiles.NAME].
