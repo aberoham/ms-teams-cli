@@ -249,7 +249,8 @@ pub fn is_valid_profile_name(name: &str) -> bool {
 }
 
 /// Refuse to create a profile under an invalid name, or under one whose token
-/// file name matches an existing profile's. A profile that already exists, in
+/// file name matches an existing profile's, ignoring case as macOS and Windows
+/// file systems do by default. A profile that already exists, in
 /// the config or the token index, keeps its name.
 pub fn check_new_profile_name(name: &str, config: &ConfigFile) -> Result<()> {
     check_new_profile_name_with(name, config, crate::auth::keyring::list_profiles)
@@ -277,7 +278,7 @@ fn check_new_profile_name_with(
         .profiles
         .keys()
         .chain(&indexed)
-        .find(|p| crate::auth::keyring::file_store_name(p) == file_name)
+        .find(|p| crate::auth::keyring::file_store_name(p).eq_ignore_ascii_case(&file_name))
     {
         return Err(TeamsError::InvalidInput(format!(
             "Profile name '{name}' would share a token file with profile '{other}'; choose another"
@@ -728,6 +729,9 @@ scopes = "User.Read People.Read offline_access"
         assert_eq!(err.exit_code(), 2);
         assert!(err.to_string().contains("customer/a"), "{err}");
         check_new_profile_name_with("customer.b", &config, legacy).unwrap();
+        let existing = || Ok(vec!["Work".to_string()]);
+        let err = check_new_profile_name_with("work", &config, existing).unwrap_err();
+        assert!(err.to_string().contains("'Work'"), "{err}");
 
         config
             .profiles
