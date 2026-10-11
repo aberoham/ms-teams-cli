@@ -19,7 +19,8 @@ const EXPIRY_SKEW_SECS: i64 = 60;
 /// 1. TEAMS_CLI_ACCESS_TOKEN env var (used verbatim, never refreshed)
 /// 2. Keyring: if the stored token is (near) expired, silently redeem its
 ///    refresh token; otherwise return it as-is
-/// 3. Error
+/// 3. Error: not authenticated when no token is stored; the store's own
+///    error when it cannot be read
 pub async fn resolve_token(profile: &str) -> Result<TokenInfo> {
     // 1. Direct env var override
     if let Ok(token) = std::env::var("TEAMS_CLI_ACCESS_TOKEN") {
@@ -34,8 +35,8 @@ pub async fn resolve_token(profile: &str) -> Result<TokenInfo> {
     }
 
     // 2. Keyring
-    match keyring::get_token(profile) {
-        Ok(info) => {
+    match keyring::get_token(profile)? {
+        Some(info) => {
             if !needs_refresh(&info) {
                 return Ok(info);
             }
@@ -48,7 +49,7 @@ pub async fn resolve_token(profile: &str) -> Result<TokenInfo> {
                 Err(e) => handle_refresh_failure(&info, e),
             }
         }
-        Err(_) => Err(not_authenticated()),
+        None => Err(not_authenticated()),
     }
 }
 
@@ -122,7 +123,7 @@ pub async fn refresh_token_with_scopes(
     profile: &str,
     scope: Option<&str>,
 ) -> Result<(TokenInfo, String)> {
-    let info = keyring::get_token(profile).map_err(|_| not_authenticated())?;
+    let info = keyring::get_token(profile)?.ok_or_else(not_authenticated)?;
 
     if info.refresh_token.is_none() {
         return Err(TeamsError::AuthError(

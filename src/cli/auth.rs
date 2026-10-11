@@ -511,9 +511,12 @@ pub async fn run(
 
         AuthCommand::List => {
             let start = Instant::now();
-            let profiles: Vec<serde_json::Value> = auth::keyring::list_profiles()
+            let profiles: Vec<serde_json::Value> = auth::keyring::list_profiles()?
                 .iter()
-                .map(|name| summarize_profile(name, auth::keyring::get_token(name).ok().as_ref()))
+                .map(|name| {
+                    let token = auth::keyring::get_token(name).ok().flatten();
+                    summarize_profile(name, token.as_ref())
+                })
                 .collect();
             let msg = serde_json::json!({
                 "profiles": profiles,
@@ -556,7 +559,7 @@ pub async fn run(
         } => {
             let start = Instant::now();
             if all {
-                let profiles = auth::keyring::list_profiles();
+                let profiles = auth::keyring::list_profiles()?;
                 for p in &profiles {
                     auth::keyring::delete_token(p)?;
                     auth::keyring::remove_profile_from_index(p)?;

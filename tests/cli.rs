@@ -1328,9 +1328,7 @@ fn message_update_requires_channel_alongside_team() {
 }
 
 /// A mistyped `TEAMS_CLI_TOKEN_STORE` is refused before any command runs, in
-/// the error envelope with exit code 2. Token reads treat every store error as
-/// "not signed in", so without the check a typo would read as exit code 3 and
-/// send the caller to log in again.
+/// the error envelope with exit code 2, naming the variable.
 #[test]
 fn unknown_token_store_is_invalid_input_not_an_auth_error() {
     for args in [["chat", "list"], ["auth", "list"]] {
@@ -1492,4 +1490,116 @@ fn a_failed_login_does_not_save_the_given_ids() {
         .code(2)
         .stdout(predicate::str::contains("Client secret is required"));
     assert!(!config_path.exists());
+}
+
+/// A `teams` command factory using the file token store under `home`, and
+/// that store's `tokens/` directory, created. Not on Windows, whose config
+/// directory ignores `HOME`.
+#[cfg(not(windows))]
+fn file_store_in(home: &std::path::Path) -> (impl Fn() -> Command + '_, std::path::PathBuf) {
+    let output = teams()
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home)
+        .args(["config", "path", "--output", "json"])
+        .output()
+        .unwrap();
+    let data: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let config_path = std::path::PathBuf::from(data["data"]["path"].as_str().unwrap());
+    assert!(config_path.starts_with(home));
+    let tokens = config_path.parent().unwrap().join("tokens");
+    fs::create_dir_all(&tokens).unwrap();
+    let cmd = move || {
+        let mut cmd = teams();
+        cmd.env_remove("TEAMS_CLI_DISABLE_KEYRING")
+            .env("TEAMS_CLI_TOKEN_STORE", "file")
+            .env("HOME", home)
+            .env("XDG_CONFIG_HOME", home);
+        cmd
+    };
+    (cmd, tokens)
+}
+
+/// A corrupt profile index is an error (exit code 10), never an empty list:
+/// `auth list` must not report no profiles, `logout --all` must not report
+/// "0 profile(s)" as a success, and none of them may rewrite the index.
+#[cfg(not(windows))]
+#[test]
+fn corrupt_profile_index_is_a_storage_error_and_left_untouched() {
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let (file_store, tokens) = file_store_in(home.path());
+    let index = tokens.join("profile-index");
+    fs::write(&index, "not json").unwrap();
+
+    for args in [
+        &["auth", "list"][..],
+        &["auth", "logout", "--all"],
+        &["auth", "logout", "--profile", "work"],
+    ] {
+        file_store()
+            .args(args)
+            .args(["--output", "json"])
+            .assert()
+            .code(10)
+            .stdout(
+                predicate::str::contains("KEYRING_ERROR")
+                    .and(predicate::str::contains("profile index")),
+            );
+        assert_eq!(fs::read_to_string(&index).unwrap(), "not json", "{args:?}");
+    }
+}
+
+/// An index that exists but cannot be read is an error too, not "no profiles".
+#[cfg(not(windows))]
+#[test]
+fn unreadable_profile_index_is_a_storage_error() {
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let (file_store, tokens) = file_store_in(home.path());
+    // a directory where the index file belongs: reading it fails, but not as
+    // "not found"
+    fs::create_dir(tokens.join("profile-index")).unwrap();
+
+    for args in [&["auth", "list"][..], &["auth", "logout", "--all"]] {
+        file_store()
+            .args(args)
+            .args(["--output", "json"])
+            .assert()
+            .code(10)
+            .stdout(predicate::str::contains("KEYRING_ERROR"));
+    }
+}
+
+/// Only a token that is not stored at all means "not authenticated" (exit
+/// code 3). A token the store holds but cannot read is a storage error (exit
+/// code 10) naming the cause, so the caller is not sent to log in again.
+#[cfg(not(windows))]
+#[test]
+fn absent_token_is_auth_error_but_unreadable_token_is_storage_error() {
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let (file_store, tokens) = file_store_in(home.path());
+    let token = tokens.join("work.token");
+
+    file_store()
+        .args(["--profile", "work", "user", "me", "--output", "json"])
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("Not authenticated."));
+
+    fs::create_dir(&token).unwrap();
+    file_store()
+        .args(["--profile", "work", "user", "me", "--output", "json"])
+        .assert()
+        .code(10)
+        .stdout(
+            predicate::str::contains("KEYRING_ERROR")
+                .and(predicate::str::contains("Failed to retrieve token"))
+                .and(predicate::str::contains("Not authenticated").not()),
+        );
+
+    fs::remove_dir(&token).unwrap();
+    fs::write(&token, "not json").unwrap();
+    file_store()
+        .args(["--profile", "work", "auth", "refresh", "--output", "json"])
+        .assert()
+        .code(10)
+        .stdout(predicate::str::contains("Failed to parse stored token"));
 }
