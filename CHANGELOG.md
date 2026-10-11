@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased (fork)
+## v0.9.1-alpha.2 - 2026-10-11
 
-Fork changes on top of upstream v0.9.0:
+Fork prerelease: upstream v0.9.0 with the changes below. v0.9.1-alpha.1 had all of them except the `auth status` fields, log colour and `message attachments delete`.
 
 - Release archives carry build provenance attestations; check one with `gh attestation verify <archive> --repo aberoham/ms-teams-cli`.
 - Upstream's stable releases are mirrored as signed, notarized and attested `upstream-vX.Y.Z` releases, built from upstream's own commit. Only releases newer than the newest mirror are built.
