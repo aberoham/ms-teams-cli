@@ -1824,3 +1824,62 @@ fn auth_switch_fails_when_the_config_cannot_be_saved() {
         .code(10)
         .stdout(predicate::str::contains("\"success\": false"));
 }
+
+/// `auth status` names the signed-in user and tenant at the top level, as
+/// `auth list` does, not only inside `token_diagnostics`.
+#[test]
+fn auth_status_reports_user_and_tenant() {
+    use base64::Engine as _;
+    let b64 = |v: serde_json::Value| {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string())
+    };
+    let jwt = format!(
+        "{}.{}.sig",
+        b64(serde_json::json!({ "alg": "none" })),
+        b64(serde_json::json!({
+            "preferred_username": "a@contoso.com",
+            "tid": "tenant-1",
+            "aud": "https://graph.microsoft.com",
+            "exp": 4_102_444_800u64
+        }))
+    );
+    let output = teams()
+        .env("TEAMS_CLI_ACCESS_TOKEN", jwt)
+        .args(["auth", "status", "--output", "json"])
+        .output()
+        .unwrap();
+    let data: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(data["data"]["user"], "a@contoso.com", "{data}");
+    assert_eq!(data["data"]["tenant_id"], "tenant-1");
+}
+
+/// `auth status` reports an unreadable token store as a storage error (exit
+/// 10), and only a profile with no token as signed out (exit 1).
+#[cfg(not(windows))]
+#[test]
+fn auth_status_reports_an_unreadable_store_as_a_storage_error() {
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let (file_store, tokens) = file_store_in(home.path());
+
+    let output = file_store()
+        .args(["auth", "status", "--output", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let data: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(data["data"]["authenticated"], false);
+    assert!(
+        data["data"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Not authenticated"),
+        "{data}"
+    );
+
+    fs::create_dir_all(tokens.join("default.token")).unwrap();
+    file_store()
+        .args(["auth", "status", "--output", "json"])
+        .assert()
+        .code(10)
+        .stdout(predicate::str::contains("KEYRING_ERROR"));
+}
