@@ -18,6 +18,7 @@
 
 ### Fixed
 
+- Log lines on stderr are coloured only when stderr is a terminal and `NO_COLOR` is unset, so `teams listen 2>listen.log` and other redirected logs no longer contain ANSI escape codes. `--no-color` still turns colour off.
 - `teams listen` on a port already in use exits with code 10 (`CONFIG_ERROR`), naming the address and the OS error, instead of reporting an authentication failure (exit code 3).
 
 ## v0.9.0 - 2026-10-04
