@@ -409,8 +409,13 @@ to / or /webhook, and answer Graph's validationToken request at the public
 edge. Responses: 202 queued, or dropped for a wrong clientState (do not
 retry); 400 malformed (do not retry); 408 body not received within 10
 seconds; 413 body over 1 MiB (do not retry); 503 output queue full because
-the stdout reader is behind (retry with backoff). At most 64 connections are
-served at once, and headers must arrive within 10 seconds.
+the stdout reader is behind, or shutting down (retry with backoff). At most 64
+connections are served at once, and headers must arrive within 10 seconds.
+.PP
+On Ctrl+C or SIGTERM the listener stops accepting, answers 503, and writes out
+every notification it already answered 202. A second signal abandons the rest.
+If any acknowledged notification is not written, the count goes to stderr and
+the exit code is 1.
 A port already in use exits with code 10.
 .SH COMPLETIONS
 .nf

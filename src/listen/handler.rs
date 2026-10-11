@@ -7,7 +7,7 @@ use hyper::body::{Body, Bytes};
 use hyper::{Method, Request, Response, StatusCode};
 use sha2::{Digest, Sha256};
 
-use super::queue::Queue;
+use super::queue::{Push, Queue};
 use crate::models::subscription::ChangeNotificationCollection;
 
 /// Largest notification body accepted.
@@ -123,14 +123,23 @@ where
             // Rejected items still get 202: an error only makes Graph resend
             // them. A batch is queued whole or not at all, so a retry after
             // 503 does not duplicate lines.
-            if !lines.is_empty() && !state.queue.try_push(lines.join("\n")) {
-                tracing::warn!("Output queue full; answering 503");
-                return Ok(plain_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "Output queue full",
-                ));
+            if lines.is_empty() {
+                return Ok(plain_response(StatusCode::ACCEPTED, ""));
             }
-            Ok(plain_response(StatusCode::ACCEPTED, ""))
+            match state.queue.try_push(lines) {
+                Push::Queued => Ok(plain_response(StatusCode::ACCEPTED, "")),
+                Push::Full => {
+                    tracing::warn!("Output queue full; answering 503");
+                    Ok(plain_response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Output queue full",
+                    ))
+                }
+                Push::Closed => Ok(plain_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Shutting down",
+                )),
+            }
         }
 
         _ => Ok(plain_response(StatusCode::NOT_FOUND, "Not Found")),
@@ -159,6 +168,7 @@ mod tests {
         let (tx, rx) = std_mpsc::channel();
         let queue = Queue::new(1024 * 1024, move |text| {
             let _ = tx.send(text.to_string());
+            Ok(())
         });
         (Arc::new(State::new(client_state, queue)), rx)
     }
@@ -257,9 +267,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shutting_down_answers_503_but_still_validates() {
+        let (state, rx) = state(None);
+        state.queue().close();
+        let resp = handle_request(post("/", r#"{"value":[{"id":"1"}]}"#), state.clone())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(rx.try_recv().is_err());
+        let resp = handle_request(post("/?validationToken=t", ""), state)
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn full_queue_answers_503() {
         // Smaller than one line, so the push is refused.
-        let queue = Queue::new(4, |_| {});
+        let queue = Queue::new(4, |_| Ok(()));
         let state = Arc::new(State::new(None, queue));
         let resp = handle_request(post("/", r#"{"value":[{"id":"1"}]}"#), state)
             .await

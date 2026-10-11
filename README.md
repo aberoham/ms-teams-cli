@@ -657,9 +657,11 @@ Responses:
 | 400 | Body is not a notification collection | Not retry |
 | 408 | Body not received within 10 seconds | Retry |
 | 413 | Body over 1 MiB | Not retry |
-| 503 | Output queue full (stdout reader is behind) | Retry with backoff |
+| 503 | Output queue full (stdout reader is behind), or shutting down | Retry with backoff |
 
 At most 64 connections are served at once; others wait. Headers must arrive within 10 seconds.
+
+On Ctrl+C or SIGTERM the listener stops accepting, answers 503, and writes out every notification it already answered 202, however long stdout takes. A second signal abandons the rest. If any acknowledged notification is not written (second signal, or stdout closed), it prints how many on stderr and exits 1.
 
 ### User Lookup
 
