@@ -282,7 +282,7 @@ If `file download` runs without `--path`, raw bytes go to stdout. Use `--path` i
 ## Subscriptions and listener
 
 ```bash
-teams subscribe create --resource RESOURCE --change-type created,updated,deleted --webhook-url URL [--expiration ISO8601] [--client-state STATE]
+teams subscribe create --resource RESOURCE --change-type created,updated,deleted --webhook-url URL [--expiration ISO8601] [--client-state STATE] [--lifecycle-url URL]
 teams subscribe list
 teams subscribe renew SUBSCRIPTION_ID [--expiration ISO8601]
 teams subscribe delete SUBSCRIPTION_ID

@@ -16,6 +16,8 @@ pub struct Subscription {
     pub expiration_date_time: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle_notification_url: Option<String>,
 }
 
 /// Request body for creating a new subscription.
@@ -28,6 +30,8 @@ pub struct CreateSubscriptionRequest {
     pub expiration_date_time: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle_notification_url: Option<String>,
 }
 
 /// Request body for renewing a subscription.
@@ -75,6 +79,7 @@ mod tests {
             notification_url: Some("https://example.com/webhook".into()),
             expiration_date_time: Some("2026-03-15T00:00:00Z".into()),
             client_state: Some("my-secret".into()),
+            lifecycle_notification_url: None,
         };
         let json = serde_json::to_string(&sub).unwrap();
         let parsed: Subscription = serde_json::from_str(&json).unwrap();
@@ -90,11 +95,30 @@ mod tests {
             resource: "/teams/all/messages".into(),
             expiration_date_time: "2026-03-15T00:00:00Z".into(),
             client_state: Some("secret".into()),
+            lifecycle_notification_url: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["changeType"], "created");
         assert_eq!(json["notificationUrl"], "https://example.com/webhook");
         assert_eq!(json["clientState"], "secret");
+        assert!(json.get("lifecycleNotificationUrl").is_none());
+    }
+
+    #[test]
+    fn create_subscription_request_sends_lifecycle_url() {
+        let req = CreateSubscriptionRequest {
+            change_type: "created".into(),
+            notification_url: "https://example.com/webhook".into(),
+            resource: "/teams/all/messages".into(),
+            expiration_date_time: "2026-03-15T00:00:00Z".into(),
+            client_state: None,
+            lifecycle_notification_url: Some("https://example.com/lifecycle".into()),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            json["lifecycleNotificationUrl"],
+            "https://example.com/lifecycle"
+        );
     }
 
     #[test]

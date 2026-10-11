@@ -1506,6 +1506,15 @@ fn subscribe_help_shows_subcommands() {
 }
 
 #[test]
+fn subscribe_create_help_shows_lifecycle_url() {
+    teams()
+        .args(["subscribe", "create", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--lifecycle-url"));
+}
+
+#[test]
 fn listen_help_shows_options() {
     teams()
         .args(["listen", "--help"])
