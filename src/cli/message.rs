@@ -476,10 +476,11 @@ pub async fn run(
 
             if format == OutputFormat::Human {
                 let headers = vec!["ID", "From", "Subject", "Body Preview", "Date"];
-                let rows: Vec<Vec<String>> = messages.iter().map(message_list_row).collect();
+                let rows: Vec<Vec<String>> = messages.items.iter().map(message_list_row).collect();
                 output::table::print_table(headers, rows);
+                output::print_more_hint(&messages);
             } else {
-                output::print_success_list(format, &messages, start);
+                output::print_success_page(format, &messages, start);
             }
             Ok(())
         }

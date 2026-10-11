@@ -33,6 +33,8 @@ Every command, when piped or called programmatically, returns a **JSON envelope*
 }
 ```
 
+Paged list results add `metadata.has_more` (more pages exist) and, when true, `metadata.next_link` (Graph's `@odata.nextLink`). With `--all-pages`, `has_more` is false. Human and plain output note truncation on stderr.
+
 On failure:
 
 ```json

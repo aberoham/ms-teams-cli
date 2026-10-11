@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::models::common::Page;
 use crate::models::tag::{
     AddTagMemberRequest, CreateTagRequest, TeamworkTag, TeamworkTagMember, UpdateTagRequest,
 };
@@ -10,7 +11,7 @@ pub async fn list_tags(
     client: &GraphClient,
     team_id: &str,
     pagination: &PaginationOpts,
-) -> Result<Vec<TeamworkTag>> {
+) -> Result<Page<TeamworkTag>> {
     client
         .get_paged(&endpoints::team_tags(team_id), &[], pagination)
         .await
@@ -49,7 +50,7 @@ pub async fn list_tag_members(
     team_id: &str,
     tag_id: &str,
     pagination: &PaginationOpts,
-) -> Result<Vec<TeamworkTagMember>> {
+) -> Result<Page<TeamworkTagMember>> {
     client
         .get_paged(&endpoints::tag_members(team_id, tag_id), &[], pagination)
         .await

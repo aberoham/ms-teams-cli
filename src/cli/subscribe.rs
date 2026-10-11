@@ -97,6 +97,7 @@ pub async fn run(
                     "Notification URL",
                 ];
                 let rows: Vec<Vec<String>> = subs
+                    .items
                     .iter()
                     .map(|s| {
                         vec![
@@ -109,8 +110,9 @@ pub async fn run(
                     })
                     .collect();
                 output::table::print_table(headers, rows);
+                output::print_more_hint(&subs);
             } else {
-                output::print_success_list(format, &subs, start);
+                output::print_success_page(format, &subs, start);
             }
             Ok(())
         }

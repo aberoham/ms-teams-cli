@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::models::common::Page;
 use crate::models::subscription::{
     CreateSubscriptionRequest, RenewSubscriptionRequest, Subscription,
 };
@@ -16,7 +17,7 @@ pub async fn create_subscription(
 pub async fn list_subscriptions(
     client: &GraphClient,
     pagination: &PaginationOpts,
-) -> Result<Vec<Subscription>> {
+) -> Result<Page<Subscription>> {
     client
         .get_paged(&endpoints::subscriptions(), &[], pagination)
         .await

@@ -48,6 +48,10 @@ Fork changes on top of upstream v0.9.0:
 
 - `message attachments download` and `file download --path` write through a uniquely named, exclusively created temp file in the target directory, then rename it into place. Attachments used a fixed `<target>.part`, so a symlink there redirected the write, a stray `.part` was clobbered, and concurrent downloads to one target shared a temp file; `file download` wrote in place, through any symlink at the target, and left a truncated file on failure; a symlink at the target is now replaced. A failed write now leaves no temp file. An existing target is still overwritten and keeps its mode, and `message attachments download --path -` still streams to stdout.
 
+### Added
+
+- List commands without `--all-pages` report whether the result is complete: JSON `metadata.has_more`, plus `metadata.next_link` (Graph's `@odata.nextLink`) when more pages exist. Previously a truncated page looked identical to a complete collection. With `--all-pages`, `has_more` is false. `data` is unchanged. Human and plain output print "More results available; use --all-pages" on stderr.
+
 ## v0.9.0 - 2026-10-04
 
 ### Added
