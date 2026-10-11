@@ -237,9 +237,20 @@ impl GraphClient {
             return Err(self.error_for_status(status, body));
         }
 
-        if status == StatusCode::NO_CONTENT || resp.content_length() == Some(0) {
-            // The update is applied; report a failed read-back as a general error
-            // (exit 1), not as the GET's own category, which would suggest it was not.
+        // The update is applied from here on, so failures are general errors (exit 1)
+        // saying so, not the category of what failed, which would suggest it was not.
+        // An empty body is read back whatever its framing: no length, or chunked.
+        let empty = status == StatusCode::NO_CONTENT;
+        let bytes = if empty {
+            Default::default()
+        } else {
+            resp.bytes().await.map_err(|e| {
+                TeamsError::Other(anyhow::anyhow!(
+                    "Update succeeded, but its response could not be read: {e}"
+                ))
+            })?
+        };
+        if empty || bytes.iter().all(u8::is_ascii_whitespace) {
             return self.get(url, &[]).await.map_err(|e| {
                 TeamsError::Other(anyhow::anyhow!(
                     "Update succeeded, but reading it back failed: {e}"
@@ -247,7 +258,13 @@ impl GraphClient {
             });
         }
 
-        decode_json(resp, false).await
+        serde_json::from_slice(&bytes).map_err(|e| TeamsError::ApiError {
+            status: status.as_u16(),
+            message: format!(
+                "Failed to parse API response: {}",
+                crate::error::describe_with_causes(&e)
+            ),
+        })
     }
 
     /// PATCH request returning no content.
@@ -1524,5 +1541,53 @@ mod tests {
                 && message.contains("gone"),
             "{message}"
         );
+    }
+
+    /// A raw HTTP/1.1 server answering each request with `patch_reply` for a
+    /// PATCH and a JSON resource for anything else, one request per connection.
+    async fn raw_patch_server(patch_reply: &'static [u8]) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/teams/t1", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut chunk).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                }
+                let reply: &[u8] = if buf.starts_with(b"PATCH") {
+                    patch_reply
+                } else {
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                      Content-Length: 12\r\nConnection: close\r\n\r\n{\"id\": \"t1\"}"
+                };
+                let _ = stream.write_all(reply).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        url
+    }
+
+    /// An empty 200 has no Content-Length when chunked or delimited by the
+    /// connection closing; it must still be read back, not parsed.
+    #[tokio::test]
+    async fn patch_with_an_empty_body_of_unknown_length_reads_the_resource_back() {
+        let replies: [&'static [u8]; 2] = [
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n",
+        ];
+        for reply in replies {
+            let url = raw_patch_server(reply).await;
+            let updated: serde_json::Value = test_client()
+                .patch(&url, &serde_json::json!({ "displayName": "New" }))
+                .await
+                .unwrap();
+            assert_eq!(updated, serde_json::json!({ "id": "t1" }));
+        }
     }
 }
