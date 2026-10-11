@@ -213,6 +213,8 @@ fn client_state_filters_forged_notifications() {
 
     let stderr = listener.stderr_eventually_contains("clientState missing or wrong");
     assert!(stderr.contains("clientState missing or wrong"), "{stderr}");
+    // stderr is a pipe here, so log lines carry no colour codes.
+    assert!(!stderr.contains('\u{1b}'), "{stderr:?}");
     assert!(!stderr.contains("s3cret-value"), "{stderr}");
     assert!(!stderr.contains("guessed-value"), "{stderr}");
     assert!(!stderr.contains("not authenticated"), "{stderr}");

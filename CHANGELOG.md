@@ -26,6 +26,7 @@ Fork changes on top of upstream v0.9.0:
 ### Fixed
 
 - `teams auth status` reports `user` and `tenant_id` at the top level, as `auth list` does, not only inside `token_diagnostics`. A token store that cannot be read is now `KEYRING_ERROR` (exit code 10) instead of `authenticated: false`, and a signed-out profile says why in `reason`.
+- Log lines on stderr are coloured only when stderr is a terminal and `NO_COLOR` is unset, so `teams listen 2>listen.log` and other redirected logs no longer contain ANSI escape codes. `--no-color` still turns colour off.
 - A token store that cannot be read (a locked keychain, a denied prompt, an SSH session) is reported as `KEYRING_ERROR` (exit code 10) with its cause, instead of "Not authenticated" (exit code 3). Only a profile with no stored token is "Not authenticated".
 - A profile index that cannot be read or parsed is an error (exit code 10) instead of an empty list. `auth login` no longer rewrites it to hold only the new profile, orphaning the rest; `auth list` and `auth logout --all` no longer report no profiles as a success.
 - `teams auth switch` with `--config` wrote the selected profile to the default config file, overwriting it with the `--config` file's contents and leaving that file unchanged. It now saves to the `--config` file, and a failed save is a config error (exit code 10) instead of a warning beside a success.
