@@ -1603,3 +1603,80 @@ fn absent_token_is_auth_error_but_unreadable_token_is_storage_error() {
         .code(10)
         .stdout(predicate::str::contains("Failed to parse stored token"));
 }
+
+/// The default config path under `home`, as `config path` reports it.
+#[cfg(not(windows))]
+fn default_config_path_in(home: &std::path::Path) -> std::path::PathBuf {
+    let output = teams()
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home)
+        .args(["config", "path", "--output", "json"])
+        .output()
+        .unwrap();
+    let data: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(data["data"]["source"], "default");
+    std::path::PathBuf::from(data["data"]["path"].as_str().unwrap())
+}
+
+/// `config path` reports the `--config` file when one is given.
+#[test]
+fn config_path_reports_the_config_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("customer.toml");
+    let result = teams()
+        .args(["--config", path.to_str().unwrap()])
+        .args(["config", "path", "--output", "json"])
+        .assert()
+        .success();
+    let data: serde_json::Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    assert_eq!(data["data"]["path"], path.to_str().unwrap());
+    assert_eq!(data["data"]["source"], "flag");
+    assert_eq!(data["data"]["exists"], false);
+}
+
+/// `auth switch --config F` records the profile in F and leaves the default
+/// config alone. Not on Windows, whose config directory ignores `HOME`.
+#[cfg(not(windows))]
+#[test]
+fn auth_switch_saves_to_the_config_flag() {
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let default_path = default_config_path_in(home.path());
+    assert!(default_path.starts_with(home.path()));
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_customer_profile_config(&dir);
+
+    teams()
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path())
+        .env("TEAMS_CLI_ACCESS_TOKEN", "not-a-jwt")
+        .args(["--config", path.to_str().unwrap()])
+        .args(["auth", "switch", "customer", "--output", "json"])
+        .assert()
+        .success();
+
+    let saved = fs::read_to_string(&path).unwrap();
+    assert!(saved.contains("profile = \"customer\""), "{saved}");
+    assert!(saved.contains("11111111-1111-1111-1111-111111111111"));
+    assert!(!default_path.exists());
+}
+
+/// A switch that cannot be saved fails with a config error instead of
+/// reporting success.
+#[test]
+fn auth_switch_fails_when_the_config_cannot_be_saved() {
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let not_a_dir = dir.path().join("file");
+    fs::write(&not_a_dir, "").unwrap();
+    let path = not_a_dir.join("config.toml");
+
+    teams()
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path())
+        .env("TEAMS_CLI_ACCESS_TOKEN", "not-a-jwt")
+        .args(["--config", path.to_str().unwrap()])
+        .args(["auth", "switch", "customer", "--output", "json"])
+        .assert()
+        .code(10)
+        .stdout(predicate::str::contains("\"success\": false"));
+}

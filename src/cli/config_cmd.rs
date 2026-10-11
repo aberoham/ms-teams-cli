@@ -112,9 +112,13 @@ pub async fn run(
 
         ConfigCommand::Path => {
             let start = Instant::now();
-            let path = config::default_config_path()?;
+            let (path, source) = match config_path {
+                Some(path) => (PathBuf::from(path), "flag"),
+                None => (config::default_config_path()?, "default"),
+            };
             let msg = serde_json::json!({
                 "path": path.display().to_string(),
+                "source": source,
                 "exists": path.exists(),
                 "namespace": config::NAMESPACE,
             });

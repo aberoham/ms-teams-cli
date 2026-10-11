@@ -6,6 +6,9 @@
 
 - A token store that cannot be read (a locked keychain, a denied prompt, an SSH session) is reported as `KEYRING_ERROR` (exit code 10) with its cause, instead of "Not authenticated" (exit code 3). Only a profile with no stored token is "Not authenticated".
 - A profile index that cannot be read or parsed is an error (exit code 10) instead of an empty list. `auth login` no longer rewrites it to hold only the new profile, orphaning the rest; `auth list` and `auth logout --all` no longer report no profiles as a success.
+- `teams auth switch` with `--config` wrote the selected profile to the default config file, overwriting it with the `--config` file's contents and leaving that file unchanged. It now saves to the `--config` file, and a failed save is a config error (exit code 10) instead of a warning beside a success.
+- `teams config path` ignored `--config` and always reported the default path. It now reports the file in use, with `source` set to `flag` or `default`.
+- Config saves (`config set`, `config init`, `auth switch`) truncated the file and wrote it in place, so a failed write could leave a partial config. They now write a temporary file and rename it over the original, as `auth login` already did.
 
 ## v0.9.0 - 2026-10-04
 
