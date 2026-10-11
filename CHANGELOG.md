@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- `teams message attachments delete (--chat C | --team T --channel CH [--reply R]) --message M [--index N] --yes` deletes files attached with `message send --attach` from the sender's OneDrive. Each `reference` attachment is resolved through Graph's shares API and deleted only when it is in the caller's own drive; inline images, other people's files and channel files are skipped with a reason. A file already gone counts as deleted. The message and its file card are left as they are; `message delete` is separate.
+
 ## v0.9.0 - 2026-10-04
 
 ### Added

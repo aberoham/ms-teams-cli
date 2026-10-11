@@ -4,7 +4,7 @@ use std::time::Instant;
 use clap::Subcommand;
 
 use crate::api::messages::MessageRef;
-use crate::api::{self, GraphClient};
+use crate::api::{self, endpoints, GraphClient};
 use crate::error::{Result, TeamsError};
 use crate::models::attachment_inventory::{build_inventory, AttachmentItem, ItemKind};
 use crate::output::{self, OutputFormat};
@@ -73,6 +73,41 @@ pub enum AttachmentsCommand {
         /// Exact output file path for a single item; use '-' for stdout
         #[arg(long, requires = "index")]
         path: Option<String>,
+    },
+    /// Delete files you attached from your OneDrive (the message itself is kept)
+    #[command(
+        override_usage = "teams message attachments delete (--team <TEAM> --channel <CHANNEL> [--reply <REPLY>] | --chat <CHAT>) (MESSAGE_ID | --message <MESSAGE>) [--index <INDEX>] --yes"
+    )]
+    Delete {
+        /// Team ID (for channel messages; requires --channel)
+        #[arg(long, requires = "channel", conflicts_with = "chat")]
+        team: Option<String>,
+        /// Channel ID (for channel messages; requires --team)
+        #[arg(long, requires = "team", conflicts_with = "chat")]
+        channel: Option<String>,
+        /// Chat ID (for chat messages)
+        #[arg(long, required_unless_present = "team")]
+        chat: Option<String>,
+        /// Reply ID (for a reply within a channel thread)
+        #[arg(long, requires = "team", conflicts_with = "chat")]
+        reply: Option<String>,
+        /// Message ID
+        #[arg(required_unless_present = "message", conflicts_with = "message")]
+        message_id: Option<String>,
+        /// Message ID
+        #[arg(
+            long = "message",
+            alias = "message-id",
+            required_unless_present = "message_id",
+            conflicts_with = "message_id"
+        )]
+        message: Option<String>,
+        /// Delete only the item with this index (from `attachments list`)
+        #[arg(long)]
+        index: Option<usize>,
+        /// Confirm the deletion; without it the command exits with code 2 and sends nothing
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -177,6 +212,169 @@ pub async fn run(
             output::print_success(format, &result, start);
             Ok(())
         }
+
+        AttachmentsCommand::Delete {
+            team,
+            channel,
+            chat,
+            reply,
+            message_id,
+            message,
+            index,
+            yes: _,
+        } => {
+            let start = Instant::now();
+            let message_id =
+                super::message::resolve_id(message_id, message, "--message or <MESSAGE_ID>")?;
+            let message_ref = resolve_message_ref(team, channel, chat, reply, message_id.clone())?;
+            let items = fetch_inventory(client, &message_ref).await?;
+            let selected = select_for_delete(&items, index)?;
+            let results = delete_items_at(client, endpoints::GRAPH_V1, &selected).await?;
+            let result = serde_json::json!({
+                "message_id": message_id,
+                "items": results,
+            });
+            output::print_success(format, &result, start);
+            Ok(())
+        }
+    }
+}
+
+/// Like `select_items`, but every kind is selectable: items that are not
+/// uploads are reported as skipped rather than refused.
+fn select_for_delete(
+    items: &[AttachmentItem],
+    index: Option<usize>,
+) -> Result<Vec<&AttachmentItem>> {
+    match index {
+        Some(i) => {
+            let item = items.iter().find(|it| it.index == i).ok_or_else(|| {
+                TeamsError::InvalidInput(format!(
+                    "No attachment item with index {i}; the message has {} item(s). \
+                     Run `teams message attachments list` to see them.",
+                    items.len()
+                ))
+            })?;
+            Ok(vec![item])
+        }
+        None if items.is_empty() => Err(TeamsError::NotFound(
+            "Message has no attachments or inline images".into(),
+        )),
+        None => Ok(items.iter().collect()),
+    }
+}
+
+/// Delete each selected file attachment that lives in the caller's own
+/// OneDrive. Everything else is skipped with a reason. Stops at the first
+/// Graph failure, noting what was already deleted.
+async fn delete_items_at(
+    client: &GraphClient,
+    base: &str,
+    items: &[&AttachmentItem],
+) -> Result<Vec<serde_json::Value>> {
+    let mut my_drive: Option<String> = None;
+    let mut results = Vec::new();
+    for item in items {
+        match delete_item_at(client, base, item, &mut my_drive).await {
+            Ok(r) => results.push(r),
+            Err(e) => {
+                let deleted: Vec<String> = results
+                    .iter()
+                    .filter(|r| r["deleted"] == true)
+                    .map(|r| r["index"].to_string())
+                    .collect();
+                if deleted.is_empty() {
+                    return Err(e);
+                }
+                let note = format!(
+                    " Deleted before the failure: item(s) {}.",
+                    deleted.join(", ")
+                );
+                // Rate-limit and network errors carry no message to extend.
+                tracing::warn!("{}", note.trim());
+                return Err(match e {
+                    TeamsError::ServerError { status, message } => TeamsError::ServerError {
+                        status,
+                        message: format!("{message}{note}"),
+                    },
+                    TeamsError::AuthError(m) => TeamsError::AuthError(format!("{m}{note}")),
+                    other => augment_error(other, &note),
+                });
+            }
+        }
+    }
+    Ok(results)
+}
+
+async fn delete_item_at(
+    client: &GraphClient,
+    base: &str,
+    item: &AttachmentItem,
+    my_drive: &mut Option<String>,
+) -> Result<serde_json::Value> {
+    let outcome = |deleted: bool, reason: Option<&str>| {
+        let mut v = serde_json::json!({
+            "index": item.index,
+            "name": item.name,
+            "deleted": deleted,
+        });
+        if let Some(reason) = reason {
+            v["reason"] = reason.into();
+        }
+        v
+    };
+
+    if item.kind != ItemKind::FileReference {
+        let reason = match item.kind {
+            ItemKind::HostedContent => "inline image, stored in the message, not an upload",
+            ItemKind::CodeSnippet => "code snippet, stored in the message, not an upload",
+            _ => "not a file attachment",
+        };
+        return Ok(outcome(false, Some(reason)));
+    }
+    let Some(url) = item.content_url.as_deref() else {
+        return Ok(outcome(false, Some("file attachment has no contentUrl")));
+    };
+
+    let drive_item = match api::files::shared_drive_item_at(client, base, url).await {
+        Ok(d) => d,
+        // Graph masks items the caller cannot see as 404, so a missing item
+        // cannot be told apart from someone else's file: never claim it deleted.
+        Err(TeamsError::NotFound(_)) | Err(TeamsError::PermissionDenied(_)) => {
+            return Ok(outcome(
+                false,
+                Some("not found or not accessible (already deleted, or not your file)"),
+            ));
+        }
+        Err(e) => return Err(e),
+    };
+
+    let my_drive_id = match my_drive {
+        Some(id) => id.as_str(),
+        None => my_drive.insert(api::files::my_drive_id_at(client, base).await?),
+    };
+    let item_drive = drive_item
+        .parent_reference
+        .as_ref()
+        .and_then(|r| r.drive_id.as_deref());
+    if item_drive != Some(my_drive_id) {
+        return Ok(outcome(
+            false,
+            Some("not in your OneDrive (shared by someone else, or a channel file)"),
+        ));
+    }
+    // A folder delete is recursive; attachments are files.
+    if drive_item.file.is_none() {
+        return Ok(outcome(false, Some("not a file")));
+    }
+    let Some(item_id) = drive_item.id.as_deref() else {
+        return Ok(outcome(false, Some("drive item has no id")));
+    };
+
+    match api::files::delete_drive_item_at(client, base, my_drive_id, item_id).await {
+        Ok(()) => Ok(outcome(true, None)),
+        Err(TeamsError::NotFound(_)) => Ok(outcome(true, Some("already deleted"))),
+        Err(e) => Err(e),
     }
 }
 
@@ -461,6 +659,290 @@ mod tests {
         write_atomically(&no_extension, b"more").unwrap();
         assert_eq!(std::fs::read(&no_extension).unwrap(), b"more");
         assert!(!dir.path().join("out.part").exists());
+    }
+
+    mod delete {
+        use super::*;
+        use crate::models::message::{ChatMessage, ChatMessageHostedContent};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        const OWN_URL: &str = "https://tenant-my.sharepoint.com/personal/me/Documents/Microsoft%20Teams%20Chat%20Files/report.pdf";
+        const FOREIGN_URL: &str =
+            "https://tenant.sharepoint.com/sites/team/Shared%20Documents/General/plan.docx";
+
+        fn test_client() -> GraphClient {
+            GraphClient::new(
+                crate::auth::token::TokenInfo {
+                    access_token: "synthetic-test-token".into(),
+                    expires_at: None,
+                    token_type: "Bearer".into(),
+                    scope: None,
+                    refresh_token: None,
+                    profile: "test".into(),
+                },
+                &crate::config::NetworkConfig {
+                    timeout: 3,
+                    max_retries: 0,
+                    retry_backoff_base: 1,
+                },
+            )
+            .unwrap()
+        }
+
+        /// Inventory of a message with one inline image (index 0) and file
+        /// attachments for each of `urls` (index 1..).
+        fn inventory(urls: &[&str]) -> Vec<AttachmentItem> {
+            let attachments: Vec<serde_json::Value> = urls
+                .iter()
+                .enumerate()
+                .map(|(i, url)| {
+                    serde_json::json!({
+                        "id": format!("att{i}"),
+                        "contentType": "reference",
+                        "contentUrl": url,
+                        "name": format!("file{i}"),
+                    })
+                })
+                .collect();
+            let msg: ChatMessage = serde_json::from_value(serde_json::json!({
+                "id": "m1",
+                "body": {
+                    "contentType": "html",
+                    "content": "<img src=\"https://graph.microsoft.com/v1.0/chats/c/messages/m1/hostedContents/aW1n/$value\">",
+                },
+                "attachments": attachments,
+            }))
+            .unwrap();
+            let hosted: Vec<ChatMessageHostedContent> =
+                serde_json::from_value(serde_json::json!([{"id": "aW1n"}])).unwrap();
+            build_inventory(&msg, &hosted)
+        }
+
+        async fn mount_me_drive(server: &MockServer, times: u64) {
+            Mock::given(method("GET"))
+                .and(path("/me/drive"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": "my-drive",
+                })))
+                .expect(times)
+                .mount(server)
+                .await;
+        }
+
+        async fn mount_share(server: &MockServer, url: &str, drive_id: &str, item_id: &str) {
+            mount_share_body(
+                server,
+                url,
+                serde_json::json!({
+                    "id": item_id,
+                    "name": "x",
+                    "file": {"mimeType": "application/pdf"},
+                    "parentReference": {"driveId": drive_id, "id": "parent"},
+                }),
+            )
+            .await;
+        }
+
+        async fn mount_share_body(server: &MockServer, url: &str, body: serde_json::Value) {
+            Mock::given(method("GET"))
+                .and(path(format!(
+                    "/shares/{}/driveItem",
+                    endpoints::sharing_url_token(url)
+                )))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .expect(1)
+                .mount(server)
+                .await;
+        }
+
+        #[tokio::test]
+        async fn own_folder_is_never_deleted() {
+            let server = MockServer::start().await;
+            mount_me_drive(&server, 1).await;
+            mount_share_body(
+                &server,
+                OWN_URL,
+                serde_json::json!({
+                    "id": "folder-item",
+                    "folder": {"childCount": 3},
+                    "parentReference": {"driveId": "my-drive", "id": "root"},
+                }),
+            )
+            .await;
+            mount_delete(&server, "folder-item", 204, 0).await;
+
+            let items = inventory(&[OWN_URL]);
+            let selected = select_for_delete(&items, Some(1)).unwrap();
+            let results = delete_items_at(&test_client(), &server.uri(), &selected)
+                .await
+                .unwrap();
+            assert_eq!(results[0]["deleted"], false);
+            assert_eq!(results[0]["reason"], "not a file");
+        }
+
+        #[tokio::test]
+        async fn server_error_after_a_delete_keeps_the_note_and_exit_code() {
+            let server = MockServer::start().await;
+            let second = "https://tenant-my.sharepoint.com/personal/me/Documents/Microsoft%20Teams%20Chat%20Files/c.pdf";
+            mount_me_drive(&server, 1).await;
+            mount_share(&server, OWN_URL, "my-drive", "own-item").await;
+            mount_share(&server, second, "my-drive", "item-c").await;
+            mount_delete(&server, "own-item", 204, 1).await;
+            mount_delete(&server, "item-c", 503, 1).await;
+
+            let items = inventory(&[OWN_URL, second]);
+            let selected = select_for_delete(&items, None).unwrap();
+            let err = delete_items_at(&test_client(), &server.uri(), &selected)
+                .await
+                .unwrap_err();
+            assert_eq!(err.exit_code(), 8);
+            assert!(err.to_string().contains("item(s) 1."), "{err}");
+        }
+
+        async fn mount_delete(server: &MockServer, item_id: &str, status: u16, times: u64) {
+            Mock::given(method("DELETE"))
+                .and(path(format!("/drives/my-drive/items/{item_id}")))
+                .respond_with(ResponseTemplate::new(status))
+                .expect(times)
+                .mount(server)
+                .await;
+        }
+
+        #[tokio::test]
+        async fn own_upload_is_deleted_and_others_are_skipped() {
+            let server = MockServer::start().await;
+            mount_me_drive(&server, 1).await;
+            mount_share(&server, OWN_URL, "my-drive", "own-item").await;
+            mount_share(&server, FOREIGN_URL, "team-drive", "team-item").await;
+            mount_delete(&server, "own-item", 204, 1).await;
+            Mock::given(method("DELETE"))
+                .and(path("/drives/team-drive/items/team-item"))
+                .respond_with(ResponseTemplate::new(204))
+                .expect(0)
+                .mount(&server)
+                .await;
+
+            let items = inventory(&[OWN_URL, FOREIGN_URL]);
+            let selected = select_for_delete(&items, None).unwrap();
+            let results = delete_items_at(&test_client(), &server.uri(), &selected)
+                .await
+                .unwrap();
+
+            assert_eq!(results.len(), 3);
+            assert_eq!(results[0]["index"], 0);
+            assert_eq!(results[0]["deleted"], false);
+            assert!(results[0]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("inline image"));
+            assert_eq!(results[1]["name"], "file0");
+            assert_eq!(results[1]["deleted"], true);
+            assert!(results[1].get("reason").is_none());
+            assert_eq!(results[2]["deleted"], false);
+            assert!(results[2]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("not in your OneDrive"));
+        }
+
+        #[tokio::test]
+        async fn delete_404_counts_as_already_deleted() {
+            let server = MockServer::start().await;
+            mount_me_drive(&server, 1).await;
+            mount_share(&server, OWN_URL, "my-drive", "own-item").await;
+            mount_delete(&server, "own-item", 404, 1).await;
+
+            let items = inventory(&[OWN_URL]);
+            let selected = select_for_delete(&items, Some(1)).unwrap();
+            let results = delete_items_at(&test_client(), &server.uri(), &selected)
+                .await
+                .unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0]["deleted"], true);
+            assert_eq!(results[0]["reason"], "already deleted");
+        }
+
+        #[tokio::test]
+        async fn unresolvable_share_is_skipped_without_delete() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(format!(
+                    "/shares/{}/driveItem",
+                    endpoints::sharing_url_token(OWN_URL)
+                )))
+                .respond_with(ResponseTemplate::new(404))
+                .expect(1)
+                .mount(&server)
+                .await;
+            mount_me_drive(&server, 0).await;
+            mount_delete(&server, "own-item", 204, 0).await;
+
+            let items = inventory(&[OWN_URL]);
+            let selected = select_for_delete(&items, Some(1)).unwrap();
+            let results = delete_items_at(&test_client(), &server.uri(), &selected)
+                .await
+                .unwrap();
+            assert_eq!(results[0]["deleted"], false);
+            assert!(results[0]["reason"].as_str().unwrap().contains("not found"));
+        }
+
+        #[tokio::test]
+        async fn delete_failure_is_an_error_noting_earlier_deletes() {
+            let server = MockServer::start().await;
+            let second = "https://tenant-my.sharepoint.com/personal/me/Documents/Microsoft%20Teams%20Chat%20Files/b.pdf";
+            mount_me_drive(&server, 1).await;
+            mount_share(&server, OWN_URL, "my-drive", "own-item").await;
+            mount_share(&server, second, "my-drive", "item-b").await;
+            mount_delete(&server, "own-item", 204, 1).await;
+            Mock::given(method("DELETE"))
+                .and(path("/drives/my-drive/items/item-b"))
+                .respond_with(ResponseTemplate::new(403))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let items = inventory(&[OWN_URL, second]);
+            let selected = select_for_delete(&items, None).unwrap();
+            let err = delete_items_at(&test_client(), &server.uri(), &selected)
+                .await
+                .unwrap_err();
+            assert_eq!(err.exit_code(), 4);
+            let msg = err.to_string();
+            assert!(msg.contains("Files.ReadWrite"), "{msg}");
+            assert!(
+                msg.contains("Deleted before the failure: item(s) 1."),
+                "{msg}"
+            );
+        }
+
+        #[tokio::test]
+        async fn inline_image_only_selection_makes_no_requests() {
+            let server = MockServer::start().await;
+            let items = inventory(&[OWN_URL]);
+            let selected = select_for_delete(&items, Some(0)).unwrap();
+            let results = delete_items_at(&test_client(), &server.uri(), &selected)
+                .await
+                .unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0]["deleted"], false);
+            assert!(server.received_requests().await.unwrap().is_empty());
+        }
+
+        #[test]
+        fn index_selection_matches_list_indexes() {
+            let items = inventory(&[OWN_URL, FOREIGN_URL]);
+            let picked = select_for_delete(&items, Some(2)).unwrap();
+            assert_eq!(picked.len(), 1);
+            assert_eq!(picked[0].index, 2);
+            assert_eq!(picked[0].content_url.as_deref(), Some(FOREIGN_URL));
+
+            let err = select_for_delete(&items, Some(9)).unwrap_err();
+            assert_eq!(err.exit_code(), 2);
+            assert!(err.to_string().contains("3 item(s)"));
+
+            assert_eq!(select_for_delete(&[], None).unwrap_err().exit_code(), 5);
+        }
     }
 
     #[test]
