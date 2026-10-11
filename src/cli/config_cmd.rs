@@ -87,6 +87,11 @@ pub async fn run(
                 .map_err(|e| TeamsError::ConfigError(format!("Serialization error: {e}")))?;
 
             let parts: Vec<&str> = key.split('.').collect();
+            match parts.as_slice() {
+                ["profiles", name, ..] => config::check_new_profile_name(name, config)?,
+                ["default", "profile"] => config::check_new_profile_name(&value, config)?,
+                _ => {}
+            }
             let mut current = &mut config_json;
             for (i, part) in parts.iter().enumerate() {
                 if i == parts.len() - 1 {
