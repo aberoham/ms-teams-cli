@@ -22,7 +22,9 @@ async fn get_user_presence_at(client: &GraphClient, url: &str) -> Result<Presenc
 
 pub async fn get_presence_batch(client: &GraphClient, ids: Vec<String>) -> Result<Vec<Presence>> {
     let req = GetPresenceBatchRequest { ids };
-    let resp: PageResponse<Presence> = client.post(&endpoints::presence_batch(), &req).await?;
+    let resp: PageResponse<Presence> = client
+        .post_read_only(&endpoints::presence_batch(), &req)
+        .await?;
     Ok(resp.value)
 }
 
@@ -213,6 +215,7 @@ mod tests {
         assert!(!cleared);
     }
 
+    /// The client does not replay a POST answered with 503, so the retry is the caller's.
     #[tokio::test]
     async fn clear_presence_reports_no_session_when_a_retry_follows_a_lost_response() {
         let server = MockServer::start().await;
@@ -232,15 +235,14 @@ mod tests {
 
         let mut client = test_client();
         client.network.max_retries = 1;
-        let cleared = clear_presence_at(
-            &client,
-            &format!("{}/me/presence/clearPresence", server.uri()),
-            &ClearPresenceRequest {
-                session_id: "app-id".to_string(),
-            },
-        )
-        .await
-        .unwrap();
+        let url = format!("{}/me/presence/clearPresence", server.uri());
+        let req = ClearPresenceRequest {
+            session_id: "app-id".to_string(),
+        };
+        let err = clear_presence_at(&client, &url, &req).await.unwrap_err();
+        assert_eq!(err.exit_code(), 8, "{err}");
+
+        let cleared = clear_presence_at(&client, &url, &req).await.unwrap();
         assert!(!cleared);
     }
 

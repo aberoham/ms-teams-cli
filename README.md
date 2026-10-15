@@ -655,11 +655,11 @@ teams config init            # Create default config file
 
 The Graph API client handles transient failures automatically:
 
-- **Retry with exponential backoff** on 429 (rate limited) and 5xx errors
-- **Respects `Retry-After` header** from Microsoft Graph
+- **Retry with exponential backoff** on 429 (rate limited), 5xx and network errors
+- **Respects `Retry-After` header** from Microsoft Graph, seconds or HTTP date, capped at 300s
+- **No duplicate writes**: a POST is retried only on 429 or when no connection was made. After a 5xx or a network failure once sent it fails (exit 8 or 7) with a hint to check before re-sending. Read-only POSTs (search, presence batch) retry like a GET
 - **Configurable**: `--retry <max>` flag, or `network.max_retries` in config
 - **Pagination**: `--all-pages` fetches all results; `--page-size` controls batch size
-- **Idempotent operations**: safe to retry on failure
 
 Agents should treat exit code 6 (rate limited) as "retry later" — the CLI has already retried internally.
 
