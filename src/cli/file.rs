@@ -207,12 +207,7 @@ pub async fn run(
             let bytes = api::files::download_file(&client, &team, &channel, &file_id).await?;
 
             if let Some(path) = path {
-                std::fs::write(&path, &bytes).map_err(|e| {
-                    crate::error::TeamsError::InvalidInput(format!(
-                        "Failed to write file '{}': {e}",
-                        path
-                    ))
-                })?;
+                super::message_attachments::write_atomically(std::path::Path::new(&path), &bytes)?;
                 if format != OutputFormat::Plain {
                     let start = Instant::now();
                     let result = serde_json::json!({

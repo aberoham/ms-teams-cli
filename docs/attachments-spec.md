@@ -269,7 +269,8 @@ Ordered, each step compiles and passes tests independently.
 - 404 on hostedContent (expired/deleted) → exit 5, name the index and message ID.
 - Partial failures download what they can, then exit non-zero with an error that names
   the failed item and lists the paths already saved.
-- Never write partial files: download to `{path}.part`, rename on success.
+- Never write partial files: download to a uniquely named, exclusively created temp file
+  beside the target, rename on success.
 
 ### Security notes
 

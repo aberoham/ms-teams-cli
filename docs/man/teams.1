@@ -168,6 +168,7 @@ teams message list (--team TEAM_ID --channel CHANNEL_ID [--message-id ROOT_MESSA
 teams message get --team TEAM_ID --channel CHANNEL_ID (MESSAGE_ID | --message MESSAGE_ID) [--with-attachments]
 teams message attachments list (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID)
 teams message attachments download (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) [--index N] [--dir DIR | --path FILE]
+teams message attachments delete (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) [--index N] --yes
 teams message reply --team TEAM_ID --channel CHANNEL_ID --message-id MESSAGE_ID [--body TEXT | --stdin] [--content-type text|html] [--image PATH]... [--attach PATH]... [--mention USER]...
 teams message reply --team TEAM_ID --channel CHANNEL_ID --message MESSAGE_ID --body TEXT
 teams message update (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) --body TEXT [--content-type text|html]
@@ -252,6 +253,24 @@ the sender and recipient share a tenant; other recipients use email.
 Lookup failures, members without a usable address, and grant failures
 warn on stderr with manual OneDrive sharing guidance. Lookup or sharing
 failures do not stop upload/send.
+.PP
+.B message attachments delete
+removes files you attached from your OneDrive. Each selected reference
+attachment is resolved through /shares/{token}/driveItem and deleted only
+when it lives in your own drive (/me/drive). Inline images, code snippets,
+cards, files shared by others, channel files and files Graph cannot find
+are skipped with a reason. Without
+.B --index
+every item is considered;
+.B --index N
+uses the numbering of
+.B attachments list.
+A file already gone counts as deleted. Needs Files.ReadWrite and
+.B --yes
+(without it the command exits with code 2). The message and its file card
+remain; use
+.B message delete
+for the message.
 .SH CHAT COMMANDS
 .nf
 teams chat list [--order-by activity]
