@@ -2,6 +2,7 @@ use crate::error::Result;
 use crate::models::app::{
     CreateTabRequest, InstallAppRequest, TeamsAppInstallation, TeamsTab, UpdateTabRequest,
 };
+use crate::models::common::Page;
 
 use super::client::{GraphClient, PaginationOpts};
 use super::endpoints;
@@ -10,7 +11,7 @@ pub async fn list_team_apps(
     client: &GraphClient,
     team_id: &str,
     pagination: &PaginationOpts,
-) -> Result<Vec<TeamsAppInstallation>> {
+) -> Result<Page<TeamsAppInstallation>> {
     client
         .get_paged(
             &endpoints::team_installed_apps(team_id),
@@ -45,7 +46,7 @@ pub async fn list_tabs(
     team_id: &str,
     channel_id: &str,
     pagination: &PaginationOpts,
-) -> Result<Vec<TeamsTab>> {
+) -> Result<Page<TeamsTab>> {
     client
         .get_paged(
             &endpoints::channel_tabs(team_id, channel_id),

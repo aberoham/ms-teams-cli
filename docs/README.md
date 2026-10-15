@@ -53,6 +53,8 @@ When stdout is piped or called by an agent, the CLI defaults to JSON:
 }
 ```
 
+Paged list results add `metadata.has_more` and, when true, `metadata.next_link` (Graph's `@odata.nextLink`); `--all-pages` gives `has_more: false`.
+
 Errors use the same envelope shape with `success: false` and a stable error code. See [command reference](command-reference.md#exit-codes) and `teams-agent-contract(7)`.
 
 ## Official Microsoft references

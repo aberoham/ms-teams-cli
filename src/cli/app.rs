@@ -50,6 +50,7 @@ pub async fn run(
             if format == OutputFormat::Human {
                 let headers = vec!["Installation ID", "App Name", "Version", "Distribution"];
                 let rows: Vec<Vec<String>> = apps
+                    .items
                     .iter()
                     .map(|a| {
                         let app = a.teams_app.as_ref();
@@ -64,8 +65,9 @@ pub async fn run(
                     })
                     .collect();
                 output::table::print_table(headers, rows);
+                output::print_more_hint(&apps);
             } else {
-                output::print_success_list(format, &apps, start);
+                output::print_success_page(format, &apps, start);
             }
             Ok(())
         }

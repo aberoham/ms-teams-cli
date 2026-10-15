@@ -113,6 +113,7 @@ pub async fn run(
             if format == OutputFormat::Human {
                 let headers = vec!["ID", "Name", "Size", "Type", "Modified"];
                 let rows: Vec<Vec<String>> = files
+                    .items
                     .iter()
                     .map(|f| {
                         let file_type = if f.folder.is_some() { "folder" } else { "file" };
@@ -126,8 +127,9 @@ pub async fn run(
                     })
                     .collect();
                 output::table::print_table(headers, rows);
+                output::print_more_hint(&files);
             } else {
-                output::print_success_list(format, &files, start);
+                output::print_success_page(format, &files, start);
             }
             Ok(())
         }

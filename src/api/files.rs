@@ -1,5 +1,5 @@
 use crate::error::{Result, TeamsError};
-use crate::models::common::PageResponse;
+use crate::models::common::{Page, PageResponse};
 use crate::models::file::{
     DriveInviteRequest, DriveItem, DrivePermission, DriveRecipient, FilesFolder, ShareLinkRequest,
     ShareLinkResponse,
@@ -25,7 +25,7 @@ pub async fn list_files(
     team_id: &str,
     channel_id: &str,
     pagination: &PaginationOpts,
-) -> Result<Vec<DriveItem>> {
+) -> Result<Page<DriveItem>> {
     let folder = get_files_folder(client, team_id, channel_id).await?;
     let drive_id = folder
         .parent_reference

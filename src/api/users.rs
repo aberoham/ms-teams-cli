@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::models::common::Page;
 use crate::models::user::User;
 
 use super::client::{GraphClient, PaginationOpts};
@@ -20,7 +21,7 @@ pub async fn list_users(
     client: &GraphClient,
     filter: Option<&str>,
     pagination: &PaginationOpts,
-) -> Result<Vec<User>> {
+) -> Result<Page<User>> {
     let mut query: Vec<(&str, &str)> = vec![];
     if let Some(f) = filter {
         query.push(("$filter", f));
