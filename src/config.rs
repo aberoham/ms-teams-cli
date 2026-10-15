@@ -216,30 +216,9 @@ pub fn save_config(config: &ConfigFile, path: Option<&str>) -> Result<()> {
         Some(p) => PathBuf::from(p),
         None => default_config_path()?,
     };
-
-    if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| TeamsError::ConfigError(format!("Failed to create config dir: {e}")))?;
-    }
-
     let content = toml::to_string_pretty(config)
         .map_err(|e| TeamsError::ConfigError(format!("Failed to serialize config: {e}")))?;
-
-    fs::write(&config_path, &content).map_err(|e| {
-        TeamsError::ConfigError(format!(
-            "Failed to write config to {}: {e}",
-            config_path.display()
-        ))
-    })?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        fs::set_permissions(&config_path, perms).ok();
-    }
-
-    Ok(())
+    write_config_text(&config_path, &content)
 }
 
 /// Resolve the active profile: an explicit `--profile` flag or
@@ -251,6 +230,61 @@ pub fn resolve_profile<'a>(cli_profile: Option<&'a str>, config: &'a ConfigFile)
         Some(profile) => profile,
         None => config.default.profile.as_deref().unwrap_or("default"),
     }
+}
+
+/// Longest name a new profile may have.
+pub const MAX_PROFILE_NAME_LEN: usize = 64;
+
+/// Whether `name` may name a new profile: `A-Z a-z 0-9 . _ -`, at most
+/// `MAX_PROFILE_NAME_LEN` long, not `.` or `..`. The file token store maps
+/// `:`, `/` and `\` to `.`, so wider names could share a token file.
+pub fn is_valid_profile_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_PROFILE_NAME_LEN
+        && name != "."
+        && name != ".."
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// Refuse to create a profile under an invalid name, or under one whose token
+/// file name matches an existing profile's, ignoring case as macOS and Windows
+/// file systems do by default. A profile that already exists, in
+/// the config or the token index, keeps its name.
+pub fn check_new_profile_name(name: &str, config: &ConfigFile) -> Result<()> {
+    check_new_profile_name_with(name, config, crate::auth::keyring::list_profiles)
+}
+
+fn check_new_profile_name_with(
+    name: &str,
+    config: &ConfigFile,
+    index: impl FnOnce() -> Result<Vec<String>>,
+) -> Result<()> {
+    if config.profiles.contains_key(name) {
+        return Ok(());
+    }
+    let indexed = index()?;
+    if indexed.iter().any(|p| p == name) {
+        return Ok(());
+    }
+    if !is_valid_profile_name(name) {
+        return Err(TeamsError::InvalidInput(format!(
+            "Invalid profile name '{name}': use A-Z a-z 0-9 . _ - (max {MAX_PROFILE_NAME_LEN}, not . or ..)"
+        )));
+    }
+    let file_name = crate::auth::keyring::file_store_name(name);
+    if let Some(other) = config
+        .profiles
+        .keys()
+        .chain(&indexed)
+        .find(|p| crate::auth::keyring::file_store_name(p).eq_ignore_ascii_case(&file_name))
+    {
+        return Err(TeamsError::InvalidInput(format!(
+            "Profile name '{name}' would share a token file with profile '{other}'; choose another"
+        )));
+    }
+    Ok(())
 }
 
 pub fn resolve_client_id(
@@ -634,6 +668,77 @@ scopes = "User.Read People.Read offline_access"
     fn resolve_profile_falls_back_to_default_name() {
         let config = ConfigFile::default();
         assert_eq!(resolve_profile(None, &config), "default");
+    }
+
+    #[test]
+    fn profile_names_are_limited_to_a_file_safe_set() {
+        for name in ["default", "work", "customer.a", "a_b-C9", &"x".repeat(64)] {
+            assert!(is_valid_profile_name(name), "{name}");
+        }
+        for name in [
+            "",
+            ".",
+            "..",
+            "customer/a",
+            "a\\b",
+            "a:b",
+            "a b",
+            "ñ",
+            &"x".repeat(65),
+        ] {
+            assert!(!is_valid_profile_name(name), "{name}");
+        }
+    }
+
+    /// The name the CLI falls back to must itself be a valid new name.
+    #[test]
+    fn the_default_profile_name_is_valid() {
+        let config = ConfigFile::default();
+        assert!(is_valid_profile_name(resolve_profile(None, &config)));
+    }
+
+    #[test]
+    fn check_new_profile_name_keeps_existing_profiles() {
+        let mut config = ConfigFile::default();
+        let err =
+            check_new_profile_name_with("customer/a", &config, || Ok(Vec::new())).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        check_new_profile_name_with("customer/a", &config, || Ok(vec!["customer/a".into()]))
+            .unwrap();
+        config
+            .profiles
+            .insert("customer/a".into(), ProfileConfig::default());
+        check_new_profile_name_with("customer/a", &config, || Ok(Vec::new())).unwrap();
+    }
+
+    #[test]
+    fn check_new_profile_name_reports_an_unreadable_index() {
+        let config = ConfigFile::default();
+        let unreadable = || Err(TeamsError::KeyringError("denied".into()));
+        for name in ["other/b", "valid"] {
+            let err = check_new_profile_name_with(name, &config, unreadable).unwrap_err();
+            assert_eq!(err.exit_code(), 10);
+        }
+    }
+
+    #[test]
+    fn check_new_profile_name_refuses_a_shared_token_file() {
+        let mut config = ConfigFile::default();
+        let legacy = || Ok(vec!["customer/a".to_string()]);
+        let err = check_new_profile_name_with("customer.a", &config, legacy).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.to_string().contains("customer/a"), "{err}");
+        check_new_profile_name_with("customer.b", &config, legacy).unwrap();
+        let existing = || Ok(vec!["Work".to_string()]);
+        let err = check_new_profile_name_with("work", &config, existing).unwrap_err();
+        assert!(err.to_string().contains("'Work'"), "{err}");
+
+        config
+            .profiles
+            .insert("customer:a".into(), ProfileConfig::default());
+        let err =
+            check_new_profile_name_with("customer.a", &config, || Ok(Vec::new())).unwrap_err();
+        assert!(err.to_string().contains("customer:a"), "{err}");
     }
 
     #[test]
@@ -1080,6 +1185,29 @@ client_id = \"other-app\"
             .file_type()
             .is_symlink());
         assert_eq!(fs::read_to_string(&target).unwrap(), "a = 2\n");
+    }
+
+    /// `save_config` replaces the file rather than truncating it, so a write
+    /// that fails, here for want of a writable directory, keeps the old file.
+    #[cfg(unix)]
+    #[test]
+    fn save_config_failure_keeps_the_old_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[default]\nprofile = \"old\"\n").unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+
+        let mut config = ConfigFile::default();
+        config.default.profile = Some("new".into());
+        let saved = save_config(&config, path.to_str());
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert!(matches!(saved, Err(TeamsError::ConfigError(_))));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[default]\nprofile = \"old\"\n"
+        );
     }
 
     #[test]

@@ -140,6 +140,9 @@ Actions:
 
 - Expect one prompt per profile after upgrading or rebuilding; approve it
   and the grant holds until the binary changes again.
+- A denied prompt or a locked keychain (common over SSH) fails with
+  `KEYRING_ERROR` (exit code 10), not "Not authenticated". Unlock the
+  keychain (`security unlock-keychain`) or use `TEAMS_CLI_TOKEN_STORE=file`.
 - An unattended process (a daemon, a scheduled job) cannot answer the prompt
   and waits on it. Set `TEAMS_CLI_TOKEN_STORE=file` for that process and sign
   in once with it set; tokens then live in `0600` files under the config
