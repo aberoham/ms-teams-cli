@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::models::common::Page;
 use crate::models::meeting::{
     AttendanceRecord, CreateMeetingRequest, MeetingAttendanceReport, OnlineMeeting,
     UpdateMeetingRequest,
@@ -10,7 +11,7 @@ use super::endpoints;
 pub async fn list_meetings(
     client: &GraphClient,
     pagination: &PaginationOpts,
-) -> Result<Vec<OnlineMeeting>> {
+) -> Result<Page<OnlineMeeting>> {
     client
         .get_paged(&endpoints::my_online_meetings(), &[], pagination)
         .await
@@ -47,7 +48,7 @@ pub async fn list_attendance_reports(
     client: &GraphClient,
     meeting_id: &str,
     pagination: &PaginationOpts,
-) -> Result<Vec<MeetingAttendanceReport>> {
+) -> Result<Page<MeetingAttendanceReport>> {
     client
         .get_paged(
             &endpoints::meeting_attendance_reports(meeting_id),
@@ -76,7 +77,7 @@ pub async fn list_attendance_records(
     meeting_id: &str,
     report_id: &str,
     pagination: &PaginationOpts,
-) -> Result<Vec<AttendanceRecord>> {
+) -> Result<Page<AttendanceRecord>> {
     client
         .get_paged(
             &endpoints::attendance_records(meeting_id, report_id),

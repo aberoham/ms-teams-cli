@@ -1,5 +1,6 @@
 use crate::error::Result;
 use crate::models::channel::{Channel, ChannelCreateRequest, ChannelUpdateRequest};
+use crate::models::common::Page;
 use crate::models::member::{AddMemberRequest, ConversationMember};
 
 use super::client::{GraphClient, PaginationOpts};
@@ -9,7 +10,7 @@ pub async fn list_channels(
     client: &GraphClient,
     team_id: &str,
     pagination: &PaginationOpts,
-) -> Result<Vec<Channel>> {
+) -> Result<Page<Channel>> {
     list_channels_at(client, &endpoints::channels(team_id), pagination).await
 }
 
@@ -17,7 +18,7 @@ async fn list_channels_at(
     client: &GraphClient,
     url: &str,
     pagination: &PaginationOpts,
-) -> Result<Vec<Channel>> {
+) -> Result<Page<Channel>> {
     client.get_paged_without_top(url, &[], pagination).await
 }
 
@@ -57,7 +58,7 @@ pub async fn list_members(
     team_id: &str,
     channel_id: &str,
     pagination: &PaginationOpts,
-) -> Result<Vec<ConversationMember>> {
+) -> Result<Page<ConversationMember>> {
     client
         .get_paged(
             &endpoints::channel_members(team_id, channel_id),
@@ -145,7 +146,8 @@ mod tests {
             },
         )
         .await
-        .unwrap();
+        .unwrap()
+        .items;
 
         assert_eq!(channels.len(), 1);
         assert_eq!(channels[0].display_name.as_deref(), Some("General"));

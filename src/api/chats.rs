@@ -1,5 +1,6 @@
 use crate::error::Result;
 use crate::models::chat::{Chat, ChatCreateRequest, ChatUpdateRequest};
+use crate::models::common::Page;
 use crate::models::member::{AddMemberRequest, ConversationMember};
 
 use super::client::{GraphClient, PaginationOpts};
@@ -31,7 +32,7 @@ pub async fn list_chats(
     client: &GraphClient,
     order: ChatOrder,
     pagination: &PaginationOpts,
-) -> Result<Vec<Chat>> {
+) -> Result<Page<Chat>> {
     list_chats_at(client, &endpoints::my_chats(), order, pagination).await
 }
 
@@ -40,7 +41,7 @@ async fn list_chats_at(
     url: &str,
     order: ChatOrder,
     pagination: &PaginationOpts,
-) -> Result<Vec<Chat>> {
+) -> Result<Page<Chat>> {
     client.get_paged(url, order.query(), pagination).await
 }
 
@@ -66,7 +67,7 @@ pub async fn list_members(
     client: &GraphClient,
     chat_id: &str,
     pagination: &PaginationOpts,
-) -> Result<Vec<ConversationMember>> {
+) -> Result<Page<ConversationMember>> {
     list_members_at(client, &endpoints::chat_members(chat_id), pagination).await
 }
 
@@ -76,7 +77,7 @@ pub(crate) async fn list_members_at(
     client: &GraphClient,
     url: &str,
     pagination: &PaginationOpts,
-) -> Result<Vec<ConversationMember>> {
+) -> Result<Page<ConversationMember>> {
     client.get_paged_without_top(url, &[], pagination).await
 }
 
@@ -173,7 +174,8 @@ mod tests {
             },
         )
         .await
-        .unwrap();
+        .unwrap()
+        .items;
         assert_eq!(chats.len(), 1);
     }
 
@@ -201,7 +203,8 @@ mod tests {
             },
         )
         .await
-        .unwrap();
+        .unwrap()
+        .items;
         assert_eq!(chats.len(), 1);
     }
 
@@ -233,7 +236,8 @@ mod tests {
             },
         )
         .await
-        .unwrap();
+        .unwrap()
+        .items;
 
         assert_eq!(members.len(), 1);
         assert_eq!(members[0].display_name.as_deref(), Some("Alice"));

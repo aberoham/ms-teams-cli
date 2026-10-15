@@ -1,4 +1,5 @@
 use crate::error::{Result, TeamsError};
+use crate::models::common::Page;
 use crate::models::message::{
     ChatMessage, ChatMessageHostedContent, PinMessageRequest, PinnedMessage, ReactionRequest,
     ReplyWithQuoteRequest, SendMessageRequest,
@@ -164,7 +165,7 @@ pub async fn list_channel_messages(
     team_id: &str,
     channel_id: &str,
     pagination: &PaginationOpts,
-) -> Result<Vec<ChatMessage>> {
+) -> Result<Page<ChatMessage>> {
     client
         .get_paged(
             &endpoints::channel_messages(team_id, channel_id),
@@ -273,7 +274,7 @@ pub async fn list_channel_message_replies(
     channel_id: &str,
     message_id: &str,
     pagination: &PaginationOpts,
-) -> Result<Vec<ChatMessage>> {
+) -> Result<Page<ChatMessage>> {
     list_channel_message_replies_at(
         client,
         &endpoints::channel_message_replies(team_id, channel_id, message_id),
@@ -286,7 +287,7 @@ async fn list_channel_message_replies_at(
     client: &GraphClient,
     url: &str,
     pagination: &PaginationOpts,
-) -> Result<Vec<ChatMessage>> {
+) -> Result<Page<ChatMessage>> {
     client.get_paged(url, &[], pagination).await
 }
 
@@ -294,7 +295,7 @@ pub async fn list_chat_messages(
     client: &GraphClient,
     chat_id: &str,
     pagination: &PaginationOpts,
-) -> Result<Vec<ChatMessage>> {
+) -> Result<Page<ChatMessage>> {
     client
         .get_paged(&endpoints::chat_messages(chat_id), &[], pagination)
         .await
@@ -895,7 +896,8 @@ mod tests {
             },
         )
         .await
-        .unwrap();
+        .unwrap()
+        .items;
 
         assert_eq!(replies.len(), 2);
         assert_eq!(replies[0].id.as_deref(), Some("1700000000002"));

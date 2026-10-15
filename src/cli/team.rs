@@ -121,6 +121,7 @@ pub async fn run(
             if format == OutputFormat::Human {
                 let headers = vec!["ID", "Display Name", "Description", "Archived"];
                 let rows: Vec<Vec<String>> = teams
+                    .items
                     .iter()
                     .map(|t| {
                         vec![
@@ -132,8 +133,9 @@ pub async fn run(
                     })
                     .collect();
                 output::table::print_table(headers, rows);
+                output::print_more_hint(&teams);
             } else {
-                output::print_success_list(format, &teams, start);
+                output::print_success_page(format, &teams, start);
             }
             Ok(())
         }
@@ -242,6 +244,7 @@ async fn run_members(
             if format == OutputFormat::Human {
                 let headers = vec!["ID", "Display Name", "Roles", "Email"];
                 let rows: Vec<Vec<String>> = members
+                    .items
                     .iter()
                     .map(|m| {
                         vec![
@@ -253,8 +256,9 @@ async fn run_members(
                     })
                     .collect();
                 output::table::print_table(headers, rows);
+                output::print_more_hint(&members);
             } else {
-                output::print_success_list(format, &members, start);
+                output::print_success_page(format, &members, start);
             }
             Ok(())
         }

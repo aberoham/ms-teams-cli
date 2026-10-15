@@ -4,7 +4,7 @@ pub mod progress;
 pub mod table;
 
 use crate::error::TeamsError;
-use crate::models::common::{Envelope, Metadata};
+use crate::models::common::{Envelope, Metadata, Page};
 use serde::Serialize;
 use std::io::{self, IsTerminal, Write};
 use std::time::Instant;
@@ -99,6 +99,36 @@ pub fn print_success_list<T: Serialize>(format: OutputFormat, data: &[T], start:
     }
 }
 
+/// Print a paged list result. JSON metadata carries `has_more` and
+/// `next_link`; other formats note truncation on stderr.
+pub fn print_success_page<T: Serialize>(format: OutputFormat, page: &Page<T>, start: Instant) {
+    match format {
+        OutputFormat::Json => {
+            json::print(&page_envelope(page, start.elapsed().as_millis() as u64));
+        }
+        OutputFormat::Human | OutputFormat::Plain => {
+            print_success_list(format, &page.items, start);
+            print_more_hint(page);
+        }
+    }
+}
+
+fn page_envelope<T: Serialize>(page: &Page<T>, duration_ms: u64) -> Envelope<&[T]> {
+    let metadata = Metadata::new()
+        .with_duration(duration_ms)
+        .with_page(page.next_link.as_deref());
+    Envelope::success(page.items.as_slice(), metadata)
+}
+
+/// Stderr footer for a truncated list; for table output.
+pub fn print_more_hint<T>(page: &Page<T>) {
+    if page.next_link.is_some() {
+        eprintln!("{MORE_RESULTS_HINT}");
+    }
+}
+
+const MORE_RESULTS_HINT: &str = "More results available; use --all-pages";
+
 pub fn print_error(format: OutputFormat, err: &TeamsError) {
     let metadata = Metadata::new();
     match format {
@@ -114,5 +144,51 @@ pub fn print_error(format: OutputFormat, err: &TeamsError) {
         OutputFormat::Human | OutputFormat::Plain => {
             eprintln!("Error: {err}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn items() -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!({ "id": "a" }),
+            serde_json::json!({ "id": "b" }),
+        ]
+    }
+
+    fn render(next_link: Option<&str>) -> serde_json::Value {
+        let page = Page {
+            items: items(),
+            next_link: next_link.map(str::to_string),
+        };
+        serde_json::to_value(page_envelope(&page, 1)).unwrap()
+    }
+
+    #[test]
+    fn truncated_page_reports_has_more_and_next_link() {
+        let json = render(Some(
+            "https://graph.microsoft.com/v1.0/me/chats?$skiptoken=x",
+        ));
+        assert_eq!(json["metadata"]["has_more"], true);
+        assert_eq!(
+            json["metadata"]["next_link"],
+            "https://graph.microsoft.com/v1.0/me/chats?$skiptoken=x"
+        );
+    }
+
+    #[test]
+    fn complete_page_reports_no_more_and_omits_next_link() {
+        let json = render(None);
+        assert_eq!(json["metadata"]["has_more"], false);
+        assert!(json["metadata"].get("next_link").is_none());
+    }
+
+    #[test]
+    fn page_data_matches_plain_list_envelope() {
+        let list = serde_json::to_value(Envelope::success(&items(), Metadata::new())).unwrap();
+        assert_eq!(render(Some("https://next"))["data"], list["data"]);
+        assert_eq!(render(None)["data"], list["data"]);
     }
 }
