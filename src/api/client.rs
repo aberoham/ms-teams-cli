@@ -1122,4 +1122,54 @@ mod tests {
         );
         assert!(page.next_link.is_none());
     }
+    #[tokio::test]
+    async fn review_empty_page_with_opaque_next_link_is_not_terminal() {
+        let server = MockServer::start().await;
+        let next = format!(
+            "{}/me/chats?$skiptoken=opaque%2Btoken%2F%3D&$top=7",
+            server.uri()
+        );
+        Mock::given(method("GET"))
+            .and(path("/me/chats"))
+            .and(query_param_is_missing("$skiptoken"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [], "@odata.nextLink": next
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/me/chats"))
+            .and(query_param("$skiptoken", "opaque+token/="))
+            .and(query_param("$top", "7"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [{"id": "last"}]
+            })))
+            .mount(&server)
+            .await;
+        let url = format!("{}/me/chats", server.uri());
+        let single = test_client()
+            .get_paged::<serde_json::Value>(&url, &[], &one_page())
+            .await
+            .unwrap();
+        assert!(single.items.is_empty());
+        assert_eq!(single.next_link.as_deref(), Some(next.as_str()));
+        let all = test_client()
+            .get_paged::<serde_json::Value>(
+                &url,
+                &[],
+                &PaginationOpts {
+                    page_size: 1,
+                    all_pages: true,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(all.items, vec![serde_json::json!({"id":"last"})]);
+        assert!(all.next_link.is_none());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.last().unwrap().url.query(),
+            Some("$skiptoken=opaque%2Btoken%2F%3D&$top=7")
+        );
+    }
 }
