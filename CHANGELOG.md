@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- `Retry-After` is read in its HTTP-date form as well as seconds, honored on retried 5xx responses as well as 429, and capped at 300 seconds.
+
+### Fixed
+
+- `teams team update` and `teams channel update` no longer fail with "Failed to parse API response" (exit 1) after a successful update. Graph answers these with 204 No Content; every PATCH-based update now reads the resource back when the response has no body, so the output is unchanged. If that read fails, the error says the update succeeded (exit 1).
+- A POST is no longer replayed after a 5xx or a network failure once sent, which could post a message twice. It fails with exit code 8 or 7 and a hint to check before re-sending. A 429 or a connection that was never made is still retried, and read-only POSTs (`search`, `presence get-batch`) retry as before.
+- A POST answered 2xx whose response body cannot be read or parsed now says Graph performed it and not to re-send, instead of a bare network or parse error.
+
 ## v0.9.0 - 2026-10-04
 
 ### Added
