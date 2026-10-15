@@ -12,6 +12,14 @@
 - A POST is no longer replayed after a 5xx or a network failure once sent, which could post a message twice. It fails with exit code 8 or 7 and a hint to check before re-sending. A 429 or a connection that was never made is still retried, and read-only POSTs (`search`, `presence get-batch`) retry as before.
 - A POST answered 2xx whose response body cannot be read or parsed now says Graph performed it and not to re-send, instead of a bare network or parse error.
 
+- `teams auth status` reports `user` and `tenant_id` at the top level, as `auth list` does, not only inside `token_diagnostics`. A token store that cannot be read is now `KEYRING_ERROR` (exit code 10) instead of `authenticated: false`, and a signed-out profile says why in `reason`.
+- A token store that cannot be read (a locked keychain, a denied prompt, an SSH session) is reported as `KEYRING_ERROR` (exit code 10) with its cause, instead of "Not authenticated" (exit code 3). Only a profile with no stored token is "Not authenticated".
+- A profile index that cannot be read or parsed is an error (exit code 10) instead of an empty list. `auth login` no longer rewrites it to hold only the new profile, orphaning the rest; `auth list` and `auth logout --all` no longer report no profiles as a success.
+- `teams auth switch` with `--config` wrote the selected profile to the default config file, overwriting it with the `--config` file's contents and leaving that file unchanged. It now saves to the `--config` file, and a failed save is a config error (exit code 10) instead of a warning beside a success.
+- `teams config path` ignored `--config` and always reported the default path. It now reports the file in use, with `source` set to `flag` or `default`.
+- Config saves (`config set`, `config init`, `auth switch`) truncated the file and wrote it in place, so a failed write could leave a partial config. They now write a temporary file and rename it over the original, as `auth login` already did.
+- A new profile's name is limited to 1-64 of `A-Z a-z 0-9 . _ -`, not `.` or `..`. `TEAMS_CLI_TOKEN_STORE=file` maps `:`, `/` and `\` to `.` in token file names, so `customer/a` and `customer.a` shared one token and could run as the wrong account. `auth login`, `config set profiles.<name>...` and `config set default.profile` refuse another name as invalid input (exit code 2). Profiles already in the config or the token index keep working under their names. A new name whose token file name matches an existing profile's, ignoring case, is refused too.
+
 ## v0.9.0 - 2026-10-04
 
 ### Added

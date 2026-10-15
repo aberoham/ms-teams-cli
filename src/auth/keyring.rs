@@ -79,9 +79,8 @@ fn parse_store_kind(value: Option<&str>) -> Result<StoreKind> {
     }
 }
 
-/// Refuse a mistyped `TEAMS_CLI_TOKEN_STORE` before any command runs. Token
-/// reads report every store error as "not signed in", so without this a typo
-/// would send the caller to log in again instead of naming the variable.
+/// Refuse a mistyped `TEAMS_CLI_TOKEN_STORE` before any command runs, naming
+/// the variable rather than failing on the first token read.
 pub fn check_token_store() -> Result<()> {
     store_kind().map(|_| ())
 }
@@ -133,9 +132,21 @@ fn absent_as_none<T>(result: ::keyring::Result<T>, what: &str) -> Result<Option<
     }
 }
 
+/// A keyring read that fails for any reason but absence: most often a locked
+/// keychain, a denied access prompt, or an SSH session without keychain access.
+fn read_keyring<T>(result: ::keyring::Result<T>) -> Result<Option<T>> {
+    absent_as_none(result, "retrieve token").map_err(|e| match e {
+        TeamsError::KeyringError(message) => TeamsError::KeyringError(format!(
+            "{message}. If the keychain is locked or this is an SSH session, unlock it \
+             or set {TOKEN_STORE_ENV}=file"
+        )),
+        other => other,
+    })
+}
+
 impl SecretStore for OsKeyring {
     fn get_password(&self, key: &str) -> Result<Option<String>> {
-        absent_as_none(Self::entry(key)?.get_password(), "retrieve token")
+        read_keyring(Self::entry(key)?.get_password())
     }
 
     fn set_password(&self, key: &str, value: &str) -> Result<()> {
@@ -148,7 +159,7 @@ impl SecretStore for OsKeyring {
     }
 
     fn get_secret(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        absent_as_none(Self::entry(key)?.get_secret(), "retrieve token")
+        read_keyring(Self::entry(key)?.get_secret())
     }
 
     fn set_secret(&self, key: &str, value: &[u8]) -> Result<()> {
@@ -170,13 +181,20 @@ struct FileStore {
     dir: PathBuf,
 }
 
+/// The file name the file token store uses for `key`. It maps `:`, `/` and
+/// `\\` to `.`, so distinct keys can share a name; new profile names are
+/// checked against it (`config::check_new_profile_name`).
+pub(crate) fn file_store_name(key: &str) -> String {
+    key.replace([':', '/', '\\'], ".")
+}
+
 impl FileStore {
     fn new(dir: PathBuf) -> Self {
         Self { dir }
     }
 
     fn path(&self, key: &str) -> PathBuf {
-        self.dir.join(key.replace([':', '/', '\\'], "."))
+        self.dir.join(file_store_name(key))
     }
 
     fn ensure_dir(&self) -> Result<()> {
@@ -241,8 +259,8 @@ fn sync_dir(dir: &Path) {
 }
 
 /// The store writes every file `0600`, so a token readable by the group or by
-/// others was copied or loosened by hand. Say so on stderr rather than refuse:
-/// a refused read would surface as "not signed in", which hides the cause.
+/// others was copied or loosened by hand. Say so on stderr rather than refuse,
+/// which would lock the owner out of their own token.
 #[cfg(unix)]
 fn warn_if_exposed(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
@@ -322,9 +340,11 @@ pub fn store_token(profile: &str, token: &TokenInfo) -> Result<()> {
     store_token_in(&*store()?, profile, token, chunk_bytes_for(store_kind()?))
 }
 
-pub fn get_token(profile: &str) -> Result<TokenInfo> {
+/// The stored token for `profile`, or `Ok(None)` when none is stored. A
+/// disabled keyring stores nothing, so it reads as absent.
+pub fn get_token(profile: &str) -> Result<Option<TokenInfo>> {
     if disabled() {
-        return Err(TeamsError::KeyringError("Keyring is disabled".into()));
+        return Ok(None);
     }
     get_token_from(&*store()?, profile)
 }
@@ -386,17 +406,16 @@ fn stored_chunk_count(store: &dyn SecretStore, profile: &str) -> Result<usize> {
         .map_or(0, |header| header.chunks))
 }
 
-fn get_token_from(store: &dyn SecretStore, profile: &str) -> Result<TokenInfo> {
-    let primary = store.get_password(&entry_key(profile))?.ok_or_else(|| {
-        TeamsError::KeyringError(format!(
-            "Failed to retrieve token: no stored token for profile `{profile}`"
-        ))
-    })?;
+fn get_token_from(store: &dyn SecretStore, profile: &str) -> Result<Option<TokenInfo>> {
+    let Some(primary) = store.get_password(&entry_key(profile))? else {
+        return Ok(None);
+    };
     let json = match serde_json::from_str::<ChunkHeader>(&primary) {
         Ok(header) => read_chunks(store, profile, header.chunks)?,
         Err(_) => primary,
     };
     serde_json::from_str(&json)
+        .map(Some)
         .map_err(|e| TeamsError::KeyringError(format!("Failed to parse stored token: {e}")))
 }
 
@@ -449,46 +468,64 @@ fn delete_chunks(
     }
 }
 
-pub fn list_profiles() -> Vec<String> {
-    if disabled() {
-        return vec![];
-    }
+const PROFILE_INDEX_KEY: &str = "profile-index";
 
-    // Keyring doesn't support enumeration natively.
-    // We maintain a separate index entry.
-    match store().and_then(|s| s.get_password("profile-index")) {
-        Ok(Some(json)) => serde_json::from_str(&json).unwrap_or_default(),
-        _ => vec![],
+/// The indexed profiles; empty when there is no index. An index that cannot be
+/// read or parsed is an error, never an empty list, so no caller rewrites it
+/// with the other profiles dropped.
+pub fn list_profiles() -> Result<Vec<String>> {
+    if disabled() {
+        return Ok(vec![]);
     }
+    list_profiles_in(&*store()?)
 }
 
 pub fn add_profile_to_index(profile: &str) -> Result<()> {
     if disabled() {
         return Ok(());
     }
-
-    let mut profiles = list_profiles();
-    if !profiles.contains(&profile.to_string()) {
-        profiles.push(profile.to_string());
-    }
-    write_profile_index(&profiles)
+    add_profile_to_index_in(&*store()?, profile)
 }
 
 pub fn remove_profile_from_index(profile: &str) -> Result<()> {
     if disabled() {
         return Ok(());
     }
-
-    let mut profiles = list_profiles();
-    profiles.retain(|p| p != profile);
-    write_profile_index(&profiles)
+    remove_profile_from_index_in(&*store()?, profile)
 }
 
-fn write_profile_index(profiles: &[String]) -> Result<()> {
+// Keyring doesn't support enumeration natively.
+// We maintain a separate index entry.
+fn list_profiles_in(store: &dyn SecretStore) -> Result<Vec<String>> {
+    let json = store
+        .get_password(PROFILE_INDEX_KEY)
+        .map_err(|e| TeamsError::KeyringError(format!("Failed to read profile index: {e}")))?;
+    match json {
+        None => Ok(vec![]),
+        Some(json) => serde_json::from_str(&json)
+            .map_err(|e| TeamsError::KeyringError(format!("Stored profile index is corrupt: {e}"))),
+    }
+}
+
+fn add_profile_to_index_in(store: &dyn SecretStore, profile: &str) -> Result<()> {
+    let mut profiles = list_profiles_in(store)?;
+    if !profiles.contains(&profile.to_string()) {
+        profiles.push(profile.to_string());
+    }
+    write_profile_index(store, &profiles)
+}
+
+fn remove_profile_from_index_in(store: &dyn SecretStore, profile: &str) -> Result<()> {
+    let mut profiles = list_profiles_in(store)?;
+    profiles.retain(|p| p != profile);
+    write_profile_index(store, &profiles)
+}
+
+fn write_profile_index(store: &dyn SecretStore, profiles: &[String]) -> Result<()> {
     let json = serde_json::to_string(profiles)
         .map_err(|e| TeamsError::KeyringError(format!("Failed to serialize index: {e}")))?;
-    store()?
-        .set_password("profile-index", &json)
+    store
+        .set_password(PROFILE_INDEX_KEY, &json)
         .map_err(|e| TeamsError::KeyringError(format!("Failed to store index: {e}")))
 }
 
@@ -585,12 +622,14 @@ mod tests {
             single.is_err(),
             "Credential Manager accepted an oversized blob; the premise of chunking is gone"
         );
-        let loaded = loaded.expect("chunked store and load");
+        let loaded = loaded
+            .expect("chunked store and load")
+            .expect("token stored");
         assert_eq!(loaded.access_token, original.access_token);
         assert_eq!(loaded.refresh_token, original.refresh_token);
         assert_eq!(loaded.scope, original.scope);
         swept.expect("logout sweep");
-        assert!(after.is_err(), "logout left the token readable");
+        assert!(matches!(after, Ok(None)), "logout left the token readable");
     }
 
     fn token(access_token: &str) -> TokenInfo {
@@ -635,7 +674,7 @@ mod tests {
                 0o600
             );
         }
-        let loaded = get_token_from(&store, "work").unwrap();
+        let loaded = get_token_from(&store, "work").unwrap().unwrap();
         assert_eq!(loaded.access_token, original.access_token);
         assert_eq!(loaded.refresh_token, original.refresh_token);
 
@@ -646,7 +685,7 @@ mod tests {
         );
 
         delete_token_from(&store, "work", false).unwrap();
-        assert!(get_token_from(&store, "work").is_err());
+        assert!(get_token_from(&store, "work").unwrap().is_none());
         assert!(
             !store.delete("work:token").unwrap(),
             "a second delete finds nothing"
@@ -693,7 +732,7 @@ mod tests {
         store_token_in(&store, "work", &original, None).unwrap();
 
         assert_eq!(store.keys(), vec!["work:token"]);
-        let loaded = get_token_from(&store, "work").unwrap();
+        let loaded = get_token_from(&store, "work").unwrap().unwrap();
         assert_eq!(loaded.access_token, original.access_token);
         assert_eq!(loaded.refresh_token, original.refresh_token);
     }
@@ -718,7 +757,7 @@ mod tests {
             format!("{{\"chunks\":{expected_chunks}}}")
         );
 
-        let loaded = get_token_from(&store, "work").unwrap();
+        let loaded = get_token_from(&store, "work").unwrap().unwrap();
         assert_eq!(loaded.access_token, original.access_token);
         assert_eq!(loaded.refresh_token, original.refresh_token);
         assert_eq!(loaded.scope, original.scope);
@@ -737,7 +776,13 @@ mod tests {
             "{\"chunks\":1}"
         );
         assert_eq!(store.keys(), vec!["work:token", "work:token:0"]);
-        assert_eq!(get_token_from(&store, "work").unwrap().access_token, "x");
+        assert_eq!(
+            get_token_from(&store, "work")
+                .unwrap()
+                .unwrap()
+                .access_token,
+            "x"
+        );
     }
 
     #[test]
@@ -753,7 +798,10 @@ mod tests {
         let expected_chunks = serialized_len(&token("short")).div_ceil(64);
         assert_eq!(after.len(), expected_chunks + 1);
         assert_eq!(
-            get_token_from(&store, "work").unwrap().access_token,
+            get_token_from(&store, "work")
+                .unwrap()
+                .unwrap()
+                .access_token,
             "short"
         );
     }
@@ -767,7 +815,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            get_token_from(&store, "work").unwrap().access_token,
+            get_token_from(&store, "work")
+                .unwrap()
+                .unwrap()
+                .access_token,
             "legacy"
         );
     }
@@ -785,9 +836,96 @@ mod tests {
     }
 
     #[test]
-    fn missing_primary_entry_is_an_error() {
+    fn missing_primary_entry_reads_as_absent() {
         let store = MemoryStore::default();
-        assert!(get_token_from(&store, "work").is_err());
+        assert!(get_token_from(&store, "work").unwrap().is_none());
+    }
+
+    /// Fails every read, as a locked keychain or a denied prompt does, and
+    /// records every write.
+    #[derive(Default)]
+    struct UnreadableStore {
+        writes: Mutex<Vec<String>>,
+    }
+
+    impl SecretStore for UnreadableStore {
+        fn get_password(&self, _key: &str) -> Result<Option<String>> {
+            Err(TeamsError::KeyringError(
+                "Failed to retrieve token: denied".into(),
+            ))
+        }
+
+        fn set_password(&self, key: &str, _value: &str) -> Result<()> {
+            self.writes.lock().unwrap().push(key.to_string());
+            Ok(())
+        }
+
+        fn get_secret(&self, key: &str) -> Result<Option<Vec<u8>>> {
+            self.get_password(key).map(|v| v.map(String::into_bytes))
+        }
+
+        fn set_secret(&self, key: &str, value: &[u8]) -> Result<()> {
+            self.set_password(key, std::str::from_utf8(value).unwrap())
+        }
+
+        fn delete(&self, _key: &str) -> Result<bool> {
+            Ok(false)
+        }
+    }
+
+    #[test]
+    fn unreadable_store_is_an_error_not_an_absent_token() {
+        let err = get_token_from(&UnreadableStore::default(), "work").unwrap_err();
+        assert!(err.to_string().contains("denied"), "{err}");
+    }
+
+    #[test]
+    fn absent_index_lists_no_profiles_and_is_created_on_add() {
+        let store = MemoryStore::default();
+        assert!(list_profiles_in(&store).unwrap().is_empty());
+
+        add_profile_to_index_in(&store, "work").unwrap();
+        add_profile_to_index_in(&store, "work").unwrap();
+        add_profile_to_index_in(&store, "home").unwrap();
+        assert_eq!(list_profiles_in(&store).unwrap(), ["work", "home"]);
+
+        remove_profile_from_index_in(&store, "work").unwrap();
+        assert_eq!(list_profiles_in(&store).unwrap(), ["home"]);
+    }
+
+    /// The failure that orphaned profiles: a corrupt index read as empty, so
+    /// the next login rewrote it to hold only the profile just signed in.
+    #[test]
+    fn corrupt_index_is_an_error_and_never_rewritten() {
+        let store = MemoryStore::default();
+        store.set_password(PROFILE_INDEX_KEY, "[\"work\",").unwrap();
+
+        let err = list_profiles_in(&store).unwrap_err();
+        assert!(
+            err.to_string().contains("profile index is corrupt"),
+            "{err}"
+        );
+        assert_eq!(err.exit_code(), 10);
+        assert!(add_profile_to_index_in(&store, "home").is_err());
+        assert!(remove_profile_from_index_in(&store, "work").is_err());
+
+        assert_eq!(
+            store.get_password(PROFILE_INDEX_KEY).unwrap().as_deref(),
+            Some("[\"work\",")
+        );
+    }
+
+    #[test]
+    fn unreadable_index_is_an_error_and_never_rewritten() {
+        let store = UnreadableStore::default();
+
+        let err = list_profiles_in(&store).unwrap_err();
+        assert!(err.to_string().contains("profile index"), "{err}");
+        assert!(err.to_string().contains("denied"), "{err}");
+        assert!(add_profile_to_index_in(&store, "home").is_err());
+        assert!(remove_profile_from_index_in(&store, "work").is_err());
+
+        assert!(store.writes.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -803,7 +941,10 @@ mod tests {
             .iter()
             .all(|key| key.starts_with("other:token")));
         assert_eq!(
-            get_token_from(&store, "other").unwrap().access_token,
+            get_token_from(&store, "other")
+                .unwrap()
+                .unwrap()
+                .access_token,
             "keep"
         );
     }
@@ -878,7 +1019,7 @@ mod tests {
 
         for size in 1..=5 {
             store_token_in(&store, "work", &original, Some(size)).unwrap();
-            let loaded = get_token_from(&store, "work").unwrap();
+            let loaded = get_token_from(&store, "work").unwrap().unwrap();
             assert_eq!(loaded.scope, original.scope, "chunk size {size}");
             assert_eq!(loaded.profile, original.profile, "chunk size {size}");
         }

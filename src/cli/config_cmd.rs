@@ -87,6 +87,11 @@ pub async fn run(
                 .map_err(|e| TeamsError::ConfigError(format!("Serialization error: {e}")))?;
 
             let parts: Vec<&str> = key.split('.').collect();
+            match parts.as_slice() {
+                ["profiles", name, ..] => config::check_new_profile_name(name, config)?,
+                ["default", "profile"] => config::check_new_profile_name(&value, config)?,
+                _ => {}
+            }
             let mut current = &mut config_json;
             for (i, part) in parts.iter().enumerate() {
                 if i == parts.len() - 1 {
@@ -112,9 +117,13 @@ pub async fn run(
 
         ConfigCommand::Path => {
             let start = Instant::now();
-            let path = config::default_config_path()?;
+            let (path, source) = match config_path {
+                Some(path) => (PathBuf::from(path), "flag"),
+                None => (config::default_config_path()?, "default"),
+            };
             let msg = serde_json::json!({
                 "path": path.display().to_string(),
+                "source": source,
                 "exists": path.exists(),
                 "namespace": config::NAMESPACE,
             });
