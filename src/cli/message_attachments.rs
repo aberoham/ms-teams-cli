@@ -349,6 +349,10 @@ async fn delete_item_at(
         Err(e) => return Err(e),
     };
 
+    if drive_item.remote_item.is_some() {
+        return Ok(outcome(false, Some("shared reference to another drive")));
+    }
+
     let my_drive_id = match my_drive {
         Some(id) => id.as_str(),
         None => my_drive.insert(api::files::my_drive_id_at(client, base).await?),
@@ -895,6 +899,41 @@ mod tests {
                 .expect(1)
                 .mount(server)
                 .await;
+        }
+
+        #[tokio::test]
+        async fn remote_reference_in_own_drive_is_never_deleted() {
+            let server = MockServer::start().await;
+            mount_share_body(
+                &server,
+                OWN_URL,
+                serde_json::json!({
+                    "id": "local-shortcut",
+                    "file": {},
+                    "parentReference": {"driveId": "my-drive"},
+                    "remoteItem": {
+                        "id": "foreign-item",
+                        "file": {},
+                        "parentReference": {"driveId": "foreign-drive"}
+                    }
+                }),
+            )
+            .await;
+            mount_me_drive(&server, 0).await;
+            mount_delete(&server, "local-shortcut", 204, 0).await;
+            let items = inventory(&[OWN_URL]);
+            let selected = select_for_delete(&items, Some(1)).unwrap();
+            let results = delete_items_at(&test_client(), &server.uri(), &selected)
+                .await
+                .unwrap();
+            assert_eq!(results[0]["deleted"], false);
+            assert_eq!(results[0]["reason"], "shared reference to another drive");
+            assert!(server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| r.method.as_str() != "DELETE"));
         }
 
         #[tokio::test]

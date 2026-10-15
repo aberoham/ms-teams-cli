@@ -766,6 +766,7 @@ mod tests {
             last_modified_by: None,
             file: None,
             folder: None,
+            remote_item: None,
             download_url: None,
             parent_reference: None,
         };
