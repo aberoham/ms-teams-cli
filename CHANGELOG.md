@@ -4,6 +4,7 @@
 
 ### Added
 
+- `teams message attachments delete (--chat C | --team T --channel CH [--reply R]) --message M [--index N] --yes` deletes files attached with `message send --attach` from the sender's OneDrive. Each `reference` attachment is resolved through Graph's shares API and deleted only when it is in the caller's own drive; inline images, other people's files and channel files are skipped with a reason. A file already gone counts as deleted. The message and its file card are left as they are; `message delete` is separate.
 - List commands without `--all-pages` report whether the result is complete: JSON `metadata.has_more`, plus `metadata.next_link` (Graph's `@odata.nextLink`) when more pages exist. Previously a truncated page looked identical to a complete collection. With `--all-pages`, `has_more` is false. `data` is unchanged. Human and plain output print "More results available; use --all-pages" on stderr.
 
 ### Changed
@@ -15,7 +16,8 @@
 - `teams team update` and `teams channel update` no longer fail with "Failed to parse API response" (exit 1) after a successful update. Graph answers these with 204 No Content; every PATCH-based update now reads the resource back when the response has no body, so the output is unchanged. If that read fails, the error says the update succeeded (exit 1).
 - A POST is no longer replayed after a 5xx or a network failure once sent, which could post a message twice. It fails with exit code 8 or 7 and a hint to check before re-sending. A 429 or a connection that was never made is still retried, and read-only POSTs (`search`, `presence get-batch`) retry as before.
 - A POST answered 2xx whose response body cannot be read or parsed now says Graph performed it and not to re-send, instead of a bare network or parse error.
-
+- Attachment deletion also rejects `remoteItem` references, including local shortcuts into another drive.
+- `message attachments download` and `file download --path` write through a uniquely named, exclusively created temp file in the target directory, then rename it into place. Attachments used a fixed `<target>.part`, so a symlink there redirected the write, a stray `.part` was clobbered, and concurrent downloads to one target shared a temp file; `file download` wrote in place, through any symlink at the target, and left a truncated file on failure; a symlink at the target is now replaced. A failed write now leaves no temp file. An existing target is still overwritten and keeps its mode, and `message attachments download --path -` still streams to stdout.
 - `teams auth status` reports `user` and `tenant_id` at the top level, as `auth list` does, not only inside `token_diagnostics`. A token store that cannot be read is now `KEYRING_ERROR` (exit code 10) instead of `authenticated: false`, and a signed-out profile says why in `reason`.
 - A token store that cannot be read (a locked keychain, a denied prompt, an SSH session) is reported as `KEYRING_ERROR` (exit code 10) with its cause, instead of "Not authenticated" (exit code 3). Only a profile with no stored token is "Not authenticated".
 - A profile index that cannot be read or parsed is an error (exit code 10) instead of an empty list. `auth login` no longer rewrites it to hold only the new profile, orphaning the rest; `auth list` and `auth logout --all` no longer report no profiles as a success.

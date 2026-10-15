@@ -28,6 +28,9 @@ pub struct DriveItem {
     pub file: Option<FileInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub folder: Option<FolderInfo>,
+    /// A reference to an item in another drive, never an owned upload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_item: Option<serde_json::Value>,
     #[serde(
         rename = "@microsoft.graph.downloadUrl",
         skip_serializing_if = "Option::is_none"
@@ -77,6 +80,12 @@ pub struct FilesFolder {
     pub web_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_reference: Option<ItemReference>,
+}
+
+/// A drive (`GET /me/drive`); only its ID is needed.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Drive {
+    pub id: Option<String>,
 }
 
 /// Request to create a sharing link
