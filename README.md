@@ -124,7 +124,7 @@ The CLI has OSO's multi-tenant delegated public client app baked in:
 ```text
 Client ID: fba1b5d0-fdd0-4fe2-9729-9ccdc38f9595
 Default authority: organizations
-Loopback redirect URI: http://localhost:8400/callback
+Loopback redirect URI: http://localhost/callback (any port)
 ```
 
 Customer admin consent:
@@ -200,11 +200,14 @@ teams auth login --device-code --scopes "User.Read ChannelMessage.Read.All offli
 # Browser-based login with a customer-owned app
 teams auth login --client-id <client-id> --tenant-id <tenant-id>
 
+# Browser login with an app whose registered redirect URI is http://localhost (no path)
+teams auth login --client-id <client-id> --tenant-id <tenant-id> --redirect-uri http://localhost
+
 # Device code flow with a customer-owned app
 teams auth login --device-code --client-id <client-id> --tenant-id <tenant-id>
 ```
 
-A delegated login saves `--client-id` and `--tenant-id` to the profile once it
+A delegated login saves `--client-id`, `--tenant-id` and `--redirect-uri` to the profile once it
 succeeds, so the profile's next `teams auth login` reuses that app registration
 instead of the built-in one. Environment variables and client credentials
 logins are never saved; see [docs/auth.md](docs/auth.md).
@@ -253,6 +256,14 @@ joined the defaults in this way.
 Delegated scope resolution follows the same order: `--scopes` (or
 `TEAMS_CLI_SCOPES`), then the profile's `scopes` field, then the built-in
 default scope set.
+
+The browser login's redirect URI follows it too: `--redirect-uri` (or
+`TEAMS_CLI_REDIRECT_URI`), then the profile's `redirect_uri`, then
+`http://localhost/callback`. The CLI listens on the URI's host and port for
+the callback on the URI's path, and the URI must be registered on the app.
+A URI without a port gets a free port from the OS at each login; the identity
+platform ignores the port of a localhost redirect URI, so the registered URI
+needs none.
 
 When permissions are consented after login (for example an admin grants a new
 delegated scope), `teams auth refresh` silently redeems the stored refresh
@@ -716,6 +727,7 @@ auth_flow = "device-code"
 | `TEAMS_CLI_CLIENT_ID` | Azure AD application (client) ID |
 | `TEAMS_CLI_CLIENT_SECRET` | Azure AD client secret |
 | `TEAMS_CLI_TENANT_ID` | Azure AD tenant ID |
+| `TEAMS_CLI_REDIRECT_URI` | Redirect URI for the browser login (same precedence as `--redirect-uri`; not saved to the profile) |
 | `TEAMS_CLI_PROFILE` | Named credential profile (overridden by `--profile`; an explicit value beats the config's `default.profile`) |
 | `TEAMS_CLI_SCOPES` | Delegated OAuth scopes for login (same precedence as `--scopes`; ignored by client credentials) |
 | `TEAMS_CLI_ACCESS_TOKEN` | Pre-obtained Microsoft Graph access token (skips login entirely; `--profile`/`TEAMS_CLI_PROFILE` do not affect which token is used) |

@@ -35,7 +35,7 @@ Check:
 - Tenant allows user consent or admin consent has been granted.
 - The OSO app is allowed by enterprise app policy.
 - BYO profile has `auth_app = "byo"` and a valid `client_id`.
-- Browser PKCE redirect `http://localhost:8400/callback` is allowed.
+- Browser PKCE redirect URI (default `http://localhost/callback`) is registered on the app.
 - Device-code login is used for SSH or remote terminals.
 
 Useful command:
@@ -203,18 +203,26 @@ In headless Linux CI, prefer one of:
 
 ## Browser login callback fails
 
-Browser login uses PKCE and the redirect URI:
+Browser login uses PKCE and, by default, the redirect URI:
 
 ```text
-http://localhost:8400/callback
+http://localhost/callback
 ```
+
+on a free port the OS picks. `--redirect-uri` selects another registered one,
+for example `--redirect-uri http://localhost` for an app registered with
+`http://localhost`; a URI with a port fixes the port (for a firewall rule, say).
 
 Check:
 
-- Port `8400` is free.
+- If the redirect URI names a port, that port is free.
 - Local firewall allows loopback.
-- BYO app registration includes that redirect URI.
+- BYO app registration includes that redirect URI. `AADSTS50011` means the URI is not registered on the app: register it, or pass the registered one.
 - Use `--device-code` if a browser callback is not possible.
+
+If you decline consent or the identity platform refuses the sign-in, the
+login fails at once with its `error` and `error_description` (exit code 3).
+With no callback at all, it gives up after 10 minutes.
 
 ## Rate limiting
 

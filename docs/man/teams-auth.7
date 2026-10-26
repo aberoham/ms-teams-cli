@@ -18,7 +18,7 @@ Delegated login defaults to the OSO multi-tenant public client app:
 .nf
 Client ID: fba1b5d0-fdd0-4fe2-9729-9ccdc38f9595
 Authority: organizations
-Redirect URI: http://localhost:8400/callback
+Redirect URI: http://localhost/callback (any port)
 .fi
 .PP
 Common login commands:
@@ -62,6 +62,14 @@ field replaces the default delegated scope string for that profile;
 is appended when missing. Use it when a BYO app has admin-consented
 permissions beyond the defaults.
 .PP
+An app whose registered redirect URI has no path, such as
+.B http://localhost,
+needs
+.B redirect_uri = "http://localhost"
+in the profile or
+.B --redirect-uri
+at login.
+.PP
 Then run:
 .PP
 .nf
@@ -70,9 +78,10 @@ teams --profile customer auth doctor --output json
 .fi
 .PP
 Instead of editing the file, a delegated login given
-.B --client-id
-and
+.B --client-id,
 .B --tenant-id
+and
+.B --redirect-uri
 saves them to the profile once it succeeds, leaving the rest of the file as
 it was. Values from
 .B TEAMS_CLI_CLIENT_ID
