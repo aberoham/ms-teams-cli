@@ -86,7 +86,7 @@ CLI flags > env vars (TEAMS_CLI_CLIENT_ID, TEAMS_CLI_CLIENT_SECRET, TEAMS_CLI_TE
 
 ### Webhook Listener
 - `teams listen --port 8080` starts a hyper HTTP server on 127.0.0.1 (`--bind` to change)
-- Handles Graph subscription validation (echoes `?validationToken`)
+- Handles Graph subscription validation (echoes `?validationToken`) on `/`, `/webhook` and `/lifecycle`
 - Outputs change notifications as NDJSON to stdout via a bounded queue and writer thread: 202 once queued, 503 when full
 - `--client-state` / `TEAMS_CLI_CLIENT_STATE` drops notifications with another or no `clientState`; output strips `clientState` and adds `kind`
 - Limits: 1 MiB body (413), 10s header and body deadlines, 64 connections

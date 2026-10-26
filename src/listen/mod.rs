@@ -22,9 +22,10 @@ const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// The server handles:
 /// - GET `/` — health check (200 OK)
-/// - POST with `?validationToken=xxx` — Graph subscription validation (echoes token)
-/// - POST with JSON body — change notifications, printed as NDJSON to stdout
-///   by a writer thread; 202 once queued, 503 when the queue is full
+/// - POST to `/`, `/webhook` or `/lifecycle`:
+///   - with `?validationToken=xxx` — Graph subscription validation (echoes token)
+///   - with a JSON body — change and lifecycle notifications, printed as NDJSON
+///     to stdout by a writer thread; 202 once queued, 503 when the queue is full
 ///
 /// On Ctrl+C or SIGTERM it stops admitting notifications (503) and writes out
 /// everything already acknowledged; a second signal abandons the rest. If any

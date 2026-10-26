@@ -242,6 +242,23 @@ fn lifecycle_notifications_are_printed_and_unauthenticated_mode_warns() {
 }
 
 #[test]
+fn lifecycle_url_path_is_validated_and_served() {
+    // Graph validates --lifecycle-url as well as --webhook-url when a
+    // subscription is created, and the README suggests a /lifecycle path.
+    let listener = Listener::start(&[], &[("TEAMS_CLI_CLIENT_STATE", "s3cret-value")]);
+
+    let (status, body) = listener.post("/lifecycle?validationToken=a%20b%2Bc", "");
+    assert_eq!((status, body.as_str()), (200, "a b+c"));
+
+    let event = r#"{"value":[{"subscriptionId":"s","lifecycleEvent":"reauthorizationRequired","clientState":"s3cret-value"}]}"#;
+    assert_eq!(listener.post("/lifecycle", event).0, 202);
+    let line = listener.next_line();
+    assert_eq!(line["kind"], "lifecycle");
+    assert_eq!(line["lifecycleEvent"], "reauthorizationRequired");
+    listener.no_more_lines();
+}
+
+#[test]
 fn oversized_body_is_413_and_listener_survives() {
     let mut listener = Listener::start(&[], &[]);
     let size = 5 * 1024 * 1024;

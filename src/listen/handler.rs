@@ -62,7 +62,9 @@ where
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/") => Ok(plain_response(StatusCode::OK, "OK")),
 
-        (&Method::POST, "/") | (&Method::POST, "/webhook") => {
+        // `/lifecycle` is the path the README suggests for --lifecycle-url;
+        // Graph validates that URL too, so it must answer like the others.
+        (&Method::POST, "/" | "/webhook" | "/lifecycle") => {
             // Validation is answered before the body is read or the output
             // queue is consulted, so it works whatever stdout is doing.
             if let Some(query) = req.uri().query() {
@@ -201,6 +203,25 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(resp.headers()["Content-Type"], "text/plain");
         assert_eq!(body_text(resp).await, "a b+c");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_path_is_validated_and_accepts_notifications() {
+        let (state, rx) = state(None);
+        let resp = handle_request(post("/lifecycle?validationToken=tok", ""), state.clone())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_text(resp).await, "tok");
+
+        let body = r#"{"value":[{"subscriptionId":"s","lifecycleEvent":"missed"}]}"#;
+        let resp = handle_request(post("/lifecycle", body), state)
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        let line: serde_json::Value =
+            serde_json::from_str(rx.recv_timeout(Duration::from_secs(10)).unwrap().trim()).unwrap();
+        assert_eq!(line["kind"], "lifecycle");
     }
 
     #[tokio::test]

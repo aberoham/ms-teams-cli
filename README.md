@@ -626,7 +626,7 @@ teams listen --port 8080
 teams listen --port 8080 | jq '.changeType, .resource'
 ```
 
-The listener binds `127.0.0.1` unless `--bind` says otherwise (`--bind 0.0.0.0` for all interfaces). Each line is one notification with every field Graph sent except `clientState`, plus `"kind": "change"` or, for lifecycle events (`lifecycleEvent`), `"kind": "lifecycle"`.
+The listener binds `127.0.0.1` unless `--bind` says otherwise (`--bind 0.0.0.0` for all interfaces). It answers Graph's validation request and accepts notifications on `/`, `/webhook` and `/lifecycle`, so one tunnel can serve both `--webhook-url` and `--lifecycle-url` (Graph validates both when the subscription is created). Each line is one notification with every field Graph sent except `clientState`, plus `"kind": "change"` or, for lifecycle events (`lifecycleEvent`), `"kind": "lifecycle"`.
 
 Pass the subscription's `--client-state` to `listen` too (or set `TEAMS_CLI_CLIENT_STATE`) and notifications without that `clientState` are dropped with a warning on stderr. Without it, anyone who can reach the port can inject lines, and the listener says so at startup.
 
@@ -645,7 +645,7 @@ teams listen --port 8080
 
 A relay can forward notifications to `teams listen` instead of Graph calling it directly:
 
-- POST the raw Graph body, `{"value":[...]}`, to `/` or `/webhook`.
+- POST the raw Graph body, `{"value":[...]}`, to `/`, `/webhook` or `/lifecycle`.
 - Graph's validation request (`?validationToken=`) needs a synchronous reply within 10 seconds, so answer it at the public edge (echo the decoded token as `text/plain`) rather than forwarding it.
 - Bind to the interface the relay uses with `--bind`, and set `--client-state` so forged posts are dropped.
 
