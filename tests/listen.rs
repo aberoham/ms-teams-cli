@@ -158,7 +158,15 @@ impl Listener {
     /// Send a raw request and return (status, body).
     fn raw(&self, request: &[u8]) -> (u16, String) {
         let mut stream = self.connect();
-        stream.write_all(request).unwrap();
+        if let Err(e) = stream.write_all(request) {
+            // Seen a handful of times locally under heavy load (ENOTCONN right
+            // after connect) and never reproduced; say what the listener said.
+            panic!(
+                "sending to the listener on port {} failed: {e}; its stderr:\n{}",
+                self.port,
+                self.stderr.lock().unwrap()
+            );
+        }
         read_response(&mut stream)
     }
 
