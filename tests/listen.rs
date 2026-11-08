@@ -158,7 +158,15 @@ impl Listener {
     /// Send a raw request and return (status, body).
     fn raw(&self, request: &[u8]) -> (u16, String) {
         let mut stream = self.connect();
-        stream.write_all(request).unwrap();
+        if let Err(e) = stream.write_all(request) {
+            // Seen a handful of times locally under heavy load (ENOTCONN right
+            // after connect) and never reproduced; say what the listener said.
+            panic!(
+                "sending to the listener on port {} failed: {e}; its stderr:\n{}",
+                self.port,
+                self.stderr.lock().unwrap()
+            );
+        }
         read_response(&mut stream)
     }
 
@@ -239,6 +247,23 @@ fn lifecycle_notifications_are_printed_and_unauthenticated_mode_warns() {
         assert_eq!(line["lifecycleEvent"], event);
         assert!(line.get("clientState").is_none(), "{line}");
     }
+}
+
+#[test]
+fn lifecycle_url_path_is_validated_and_served() {
+    // Graph validates --lifecycle-url as well as --webhook-url when a
+    // subscription is created, and the README suggests a /lifecycle path.
+    let listener = Listener::start(&[], &[("TEAMS_CLI_CLIENT_STATE", "s3cret-value")]);
+
+    let (status, body) = listener.post("/lifecycle?validationToken=a%20b%2Bc", "");
+    assert_eq!((status, body.as_str()), (200, "a b+c"));
+
+    let event = r#"{"value":[{"subscriptionId":"s","lifecycleEvent":"reauthorizationRequired","clientState":"s3cret-value"}]}"#;
+    assert_eq!(listener.post("/lifecycle", event).0, 202);
+    let line = listener.next_line();
+    assert_eq!(line["kind"], "lifecycle");
+    assert_eq!(line["lifecycleEvent"], "reauthorizationRequired");
+    listener.no_more_lines();
 }
 
 #[test]

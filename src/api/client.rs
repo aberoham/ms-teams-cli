@@ -1553,6 +1553,56 @@ mod tests {
         );
     }
 
+    /// A raw HTTP/1.1 server answering each request with `patch_reply` for a
+    /// PATCH and a JSON resource for anything else, one request per connection.
+    async fn raw_patch_server(patch_reply: &'static [u8]) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/teams/t1", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut chunk).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                }
+                let reply: &[u8] = if buf.starts_with(b"PATCH") {
+                    patch_reply
+                } else {
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                      Content-Length: 12\r\nConnection: close\r\n\r\n{\"id\": \"t1\"}"
+                };
+                let _ = stream.write_all(reply).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        url
+    }
+
+    /// An empty 200 has no Content-Length when chunked or delimited by the
+    /// connection closing; it must still be read back, not parsed.
+    #[tokio::test]
+    async fn patch_with_an_empty_body_of_unknown_length_reads_the_resource_back() {
+        // The server closes every connection, so the chunked reply says so too.
+        // Without `Connection: close` the client pools it and can send the
+        // read-back GET down the socket just as the server closes it.
+        let replies: [&'static [u8]; 2] = [
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n0\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n",
+        ];
+        for reply in replies {
+            let url = raw_patch_server(reply).await;
+            let updated: serde_json::Value = test_client()
+                .patch(&url, &serde_json::json!({ "displayName": "New" }))
+                .await
+                .unwrap();
+            assert_eq!(updated, serde_json::json!({ "id": "t1" }));
+        }
+    }
     /// Mounts a two-page `/me/chats` collection; returns the second page's URL.
     async fn mount_two_pages(server: &MockServer) -> String {
         let next = format!("{}/me/chats?$skiptoken=abc", server.uri());
@@ -1637,52 +1687,54 @@ mod tests {
         );
         assert!(page.next_link.is_none());
     }
-
-    /// A raw HTTP/1.1 server answering each request with `patch_reply` for a
-    /// PATCH and a JSON resource for anything else, one request per connection.
-    async fn raw_patch_server(patch_reply: &'static [u8]) -> String {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/teams/t1", listener.local_addr().unwrap());
-        tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
-                let mut buf = Vec::new();
-                let mut chunk = [0u8; 4096];
-                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                    match stream.read(&mut chunk).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                    }
-                }
-                let reply: &[u8] = if buf.starts_with(b"PATCH") {
-                    patch_reply
-                } else {
-                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
-                      Content-Length: 12\r\nConnection: close\r\n\r\n{\"id\": \"t1\"}"
-                };
-                let _ = stream.write_all(reply).await;
-                let _ = stream.shutdown().await;
-            }
-        });
-        url
-    }
-
-    /// An empty 200 has no Content-Length when chunked or delimited by the
-    /// connection closing; it must still be read back, not parsed.
     #[tokio::test]
-    async fn patch_with_an_empty_body_of_unknown_length_reads_the_resource_back() {
-        let replies: [&'static [u8]; 2] = [
-            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
-            b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n",
-        ];
-        for reply in replies {
-            let url = raw_patch_server(reply).await;
-            let updated: serde_json::Value = test_client()
-                .patch(&url, &serde_json::json!({ "displayName": "New" }))
-                .await
-                .unwrap();
-            assert_eq!(updated, serde_json::json!({ "id": "t1" }));
-        }
+    async fn review_empty_page_with_opaque_next_link_is_not_terminal() {
+        let server = MockServer::start().await;
+        let next = format!(
+            "{}/me/chats?$skiptoken=opaque%2Btoken%2F%3D&$top=7",
+            server.uri()
+        );
+        Mock::given(method("GET"))
+            .and(path("/me/chats"))
+            .and(query_param_is_missing("$skiptoken"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [], "@odata.nextLink": next
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/me/chats"))
+            .and(query_param("$skiptoken", "opaque+token/="))
+            .and(query_param("$top", "7"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [{"id": "last"}]
+            })))
+            .mount(&server)
+            .await;
+        let url = format!("{}/me/chats", server.uri());
+        let single = test_client()
+            .get_paged::<serde_json::Value>(&url, &[], &one_page())
+            .await
+            .unwrap();
+        assert!(single.items.is_empty());
+        assert_eq!(single.next_link.as_deref(), Some(next.as_str()));
+        let all = test_client()
+            .get_paged::<serde_json::Value>(
+                &url,
+                &[],
+                &PaginationOpts {
+                    page_size: 1,
+                    all_pages: true,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(all.items, vec![serde_json::json!({"id":"last"})]);
+        assert!(all.next_link.is_none());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.last().unwrap().url.query(),
+            Some("$skiptoken=opaque%2Btoken%2F%3D&$top=7")
+        );
     }
 }

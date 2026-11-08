@@ -73,6 +73,30 @@ impl MessageRef {
         }
     }
 
+    /// URL of `setReaction` or `unsetReaction` on this message. Unlike the
+    /// delete actions, chat reactions are served under `/chats`, not `/me/chats`.
+    fn reaction_url(&self, action: &str) -> String {
+        format!("{}/{action}", self.message_url())
+    }
+
+    /// Graph's 404 for a reply does not say whether the parent post or the
+    /// reply is missing, so name both IDs.
+    fn explain_not_found(&self, err: TeamsError) -> TeamsError {
+        match (self, err) {
+            (
+                Self::ChannelReply {
+                    message_id,
+                    reply_id,
+                    ..
+                },
+                TeamsError::NotFound(body),
+            ) => TeamsError::NotFound(format!(
+                "reply {reply_id} under parent message {message_id}: {body}"
+            )),
+            (_, err) => err,
+        }
+    }
+
     fn hosted_contents_url(&self) -> String {
         match self {
             Self::Channel {
@@ -130,7 +154,9 @@ impl MessageRef {
 }
 
 pub async fn get_message(client: &GraphClient, message: &MessageRef) -> Result<ChatMessage> {
-    get_message_at(client, &message.message_url()).await
+    get_message_at(client, &message.message_url())
+        .await
+        .map_err(|err| message.explain_not_found(err))
 }
 
 pub(crate) async fn get_message_at(client: &GraphClient, url: &str) -> Result<ChatMessage> {
@@ -171,20 +197,6 @@ pub async fn list_channel_messages(
             &endpoints::channel_messages(team_id, channel_id),
             &[],
             pagination,
-        )
-        .await
-}
-
-pub async fn get_channel_message(
-    client: &GraphClient,
-    team_id: &str,
-    channel_id: &str,
-    message_id: &str,
-) -> Result<ChatMessage> {
-    client
-        .get(
-            &endpoints::channel_message(team_id, channel_id, message_id),
-            &[],
         )
         .await
 }
@@ -230,10 +242,12 @@ pub async fn update_message(
     message: &MessageRef,
     req: &SendMessageRequest,
 ) -> Result<()> {
-    update_message_at(client, &message.message_url(), req).await
+    update_message_at(client, &message.message_url(), req)
+        .await
+        .map_err(|err| message.explain_not_found(err))
 }
 
-async fn update_message_at(
+pub(crate) async fn update_message_at(
     client: &GraphClient,
     url: &str,
     req: &SendMessageRequest,
@@ -248,12 +262,16 @@ async fn update_message_at(
 /// state. The action is delegated-only; the command layer requires a
 /// delegated token first.
 pub async fn soft_delete_message(client: &GraphClient, message: &MessageRef) -> Result<()> {
-    post_action(client, &message.action_url("softDelete")).await
+    post_action(client, &message.action_url("softDelete"))
+        .await
+        .map_err(|err| message.explain_not_found(err))
 }
 
 /// Reverse [`soft_delete_message`]; Graph answers `204 No Content`.
 pub async fn undo_soft_delete_message(client: &GraphClient, message: &MessageRef) -> Result<()> {
-    post_action(client, &message.action_url("undoSoftDelete")).await
+    post_action(client, &message.action_url("undoSoftDelete"))
+        .await
+        .map_err(|err| message.explain_not_found(err))
 }
 
 /// The actions take no parameters, and Graph documents them as taking no
@@ -369,60 +387,22 @@ async fn reply_with_quote_at(
 
 pub async fn set_reaction(
     client: &GraphClient,
-    team_id: &str,
-    channel_id: &str,
-    message_id: &str,
+    message: &MessageRef,
     reaction: &str,
 ) -> Result<()> {
-    set_reaction_at(
-        client,
-        &endpoints::message_set_reaction(team_id, channel_id, message_id),
-        reaction,
-    )
-    .await
+    set_reaction_at(client, &message.reaction_url("setReaction"), reaction)
+        .await
+        .map_err(|err| message.explain_not_found(err))
 }
 
 pub async fn unset_reaction(
     client: &GraphClient,
-    team_id: &str,
-    channel_id: &str,
-    message_id: &str,
+    message: &MessageRef,
     reaction: &str,
 ) -> Result<()> {
-    set_reaction_at(
-        client,
-        &endpoints::message_unset_reaction(team_id, channel_id, message_id),
-        reaction,
-    )
-    .await
-}
-
-pub async fn set_chat_reaction(
-    client: &GraphClient,
-    chat_id: &str,
-    message_id: &str,
-    reaction: &str,
-) -> Result<()> {
-    set_reaction_at(
-        client,
-        &endpoints::chat_message_set_reaction(chat_id, message_id),
-        reaction,
-    )
-    .await
-}
-
-pub async fn unset_chat_reaction(
-    client: &GraphClient,
-    chat_id: &str,
-    message_id: &str,
-    reaction: &str,
-) -> Result<()> {
-    set_reaction_at(
-        client,
-        &endpoints::chat_message_unset_reaction(chat_id, message_id),
-        reaction,
-    )
-    .await
+    set_reaction_at(client, &message.reaction_url("unsetReaction"), reaction)
+        .await
+        .map_err(|err| message.explain_not_found(err))
 }
 
 /// POST `{"reactionType": reaction}` to a setReaction/unsetReaction action URL.
@@ -436,38 +416,66 @@ async fn set_reaction_at(client: &GraphClient, url: &str, reaction: &str) -> Res
 
 // --- Pinned Messages ---
 
-pub async fn pin_message(
+/// Pin a chat message. Graph has pinned messages on chats only; the channel
+/// equivalent of this path does not exist. The pinned-message ID Graph
+/// returns is the message ID, and pinning a pinned message again is a no-op.
+pub async fn pin_chat_message(
     client: &GraphClient,
-    team_id: &str,
-    channel_id: &str,
+    chat_id: &str,
     message_id: &str,
 ) -> Result<PinnedMessage> {
-    let req = PinMessageRequest {
-        message_odata_bind: format!(
-            "https://graph.microsoft.com/v1.0/teams('{team_id}')/channels('{channel_id}')/messages('{message_id}')"
-        ),
-    };
-    client
-        .post(
-            &endpoints::channel_pinned_messages(team_id, channel_id),
-            &req,
-        )
-        .await
+    pin_chat_message_at(
+        client,
+        &endpoints::chat_pinned_messages(chat_id),
+        chat_id,
+        message_id,
+    )
+    .await
 }
 
-pub async fn unpin_message(
+async fn pin_chat_message_at(
     client: &GraphClient,
-    team_id: &str,
-    channel_id: &str,
-    pinned_message_id: &str,
+    url: &str,
+    chat_id: &str,
+    message_id: &str,
+) -> Result<PinnedMessage> {
+    // The bind names the message by its canonical Graph URL, whatever host the
+    // request itself goes to.
+    let req = PinMessageRequest {
+        message_odata_bind: endpoints::chat_message(chat_id, message_id),
+    };
+    client.post(url, &req).await
+}
+
+/// Unpin a chat message by its pinned-message ID, which is the message ID.
+pub async fn unpin_chat_message(
+    client: &GraphClient,
+    chat_id: &str,
+    message_id: &str,
 ) -> Result<()> {
-    client
-        .delete(&endpoints::channel_pinned_message(
-            team_id,
-            channel_id,
-            pinned_message_id,
-        ))
-        .await
+    unpin_chat_message_at(
+        client,
+        &endpoints::chat_pinned_message(chat_id, message_id),
+        chat_id,
+        message_id,
+    )
+    .await
+}
+
+/// Graph's 404 here is a bare `NotFound`, also for a message that is simply
+/// not pinned, so say which message and chat were meant.
+async fn unpin_chat_message_at(
+    client: &GraphClient,
+    url: &str,
+    chat_id: &str,
+    message_id: &str,
+) -> Result<()> {
+    client.delete(url).await.map_err(|err| match err {
+        TeamsError::NotFound(body) => TeamsError::NotFound(format!(
+            "message {message_id} is not pinned in chat {chat_id}: {body}"
+        )),
+        other => other,
+    })
 }
 
 #[cfg(test)]
@@ -501,23 +509,64 @@ mod tests {
     }
 
     #[test]
-    fn reaction_endpoints_target_v1() {
+    fn message_ref_reaction_urls_target_v1() {
+        let chat = MessageRef::Chat {
+            chat_id: "19:abc@thread.v2".into(),
+            message_id: "1700000000000".into(),
+        };
         assert_eq!(
-            endpoints::chat_message_set_reaction("19:abc@thread.v2", "1700000000000"),
+            chat.reaction_url("setReaction"),
             "https://graph.microsoft.com/v1.0/chats/19:abc@thread.v2/messages/1700000000000/setReaction"
         );
+        let channel = MessageRef::Channel {
+            team_id: "team-id".into(),
+            channel_id: "channel-id".into(),
+            message_id: "1700000000000".into(),
+        };
         assert_eq!(
-            endpoints::chat_message_unset_reaction("19:abc@thread.v2", "1700000000000"),
-            "https://graph.microsoft.com/v1.0/chats/19:abc@thread.v2/messages/1700000000000/unsetReaction"
-        );
-        assert_eq!(
-            endpoints::message_set_reaction("team-id", "channel-id", "1700000000000"),
-            "https://graph.microsoft.com/v1.0/teams/team-id/channels/channel-id/messages/1700000000000/setReaction"
-        );
-        assert_eq!(
-            endpoints::message_unset_reaction("team-id", "channel-id", "1700000000000"),
+            channel.reaction_url("unsetReaction"),
             "https://graph.microsoft.com/v1.0/teams/team-id/channels/channel-id/messages/1700000000000/unsetReaction"
         );
+        let reply = MessageRef::ChannelReply {
+            team_id: "team-id".into(),
+            channel_id: "channel-id".into(),
+            message_id: "1700000000000".into(),
+            reply_id: "1700000000001".into(),
+        };
+        assert_eq!(
+            reply.reaction_url("setReaction"),
+            "https://graph.microsoft.com/v1.0/teams/team-id/channels/channel-id/messages/1700000000000/replies/1700000000001/setReaction"
+        );
+    }
+
+    /// Graph's 404 for a reply does not say whether the parent post or the
+    /// reply is missing, so the error names both. Other errors and targets
+    /// pass through.
+    #[test]
+    fn reply_not_found_names_the_parent_and_the_reply() {
+        let reply = MessageRef::ChannelReply {
+            team_id: "t".into(),
+            channel_id: "c".into(),
+            message_id: "parent-id".into(),
+            reply_id: "reply-id".into(),
+        };
+        let err = reply.explain_not_found(TeamsError::NotFound("gone".into()));
+        assert_eq!(
+            err.to_string(),
+            "Resource not found: reply reply-id under parent message parent-id: gone"
+        );
+        assert_eq!(err.exit_code(), 5);
+
+        let denied = reply.explain_not_found(TeamsError::PermissionDenied("no".into()));
+        assert_eq!(denied.to_string(), "Permission denied: no");
+
+        let channel = MessageRef::Channel {
+            team_id: "t".into(),
+            channel_id: "c".into(),
+            message_id: "m".into(),
+        };
+        let err = channel.explain_not_found(TeamsError::NotFound("gone".into()));
+        assert_eq!(err.to_string(), "Resource not found: gone");
     }
 
     /// Graph expects the reaction as a unicode character in `reactionType`
@@ -772,6 +821,139 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    /// An edit that keeps or adds a mention must PATCH the body and the
+    /// synchronized `mentions` array together, for chats and channels alike.
+    #[tokio::test]
+    async fn update_message_patches_the_body_with_synchronized_mentions() {
+        let expected = serde_json::json!({
+            "body": {
+                "contentType": "html",
+                "content": "Hey <at id=\"0\">Sophie Daniels</at>, edited"
+            },
+            "mentions": [{
+                "id": 0,
+                "mentionText": "Sophie Daniels",
+                "mentioned": {
+                    "user": {
+                        "id": "32cbca05-dc05-454f-b0f3-072f331d4c97",
+                        "displayName": "Sophie Daniels",
+                        "userIdentityType": "aadUser"
+                    }
+                }
+            }]
+        });
+        let req = SendMessageRequest {
+            subject: None,
+            body: ItemBody {
+                content_type: Some("html".into()),
+                content: Some("Hey <at id=\"0\">Sophie Daniels</at>, edited".into()),
+            },
+            attachments: None,
+            hosted_contents: None,
+            mentions: Some(serde_json::from_value(expected["mentions"].clone()).unwrap()),
+        };
+
+        for path_ in [
+            "/chats/19:abc@thread.v2/messages/1700000000000",
+            "/teams/T/channels/C/messages/P/replies/R",
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("PATCH"))
+                .and(path(path_))
+                .and(body_json(&expected))
+                .respond_with(ResponseTemplate::new(204))
+                .expect(1)
+                .mount(&server)
+                .await;
+            update_message_at(&test_client(), &format!("{}{path_}", server.uri()), &req)
+                .await
+                .unwrap();
+        }
+    }
+
+    /// Shapes observed live on 2026-11-01: the POST binds the message by its
+    /// canonical v1.0 URL and gets 201 with the message ID as the pinned ID.
+    #[tokio::test]
+    async fn pin_chat_message_binds_the_canonical_message_url() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chats/19:abc@thread.v2/pinnedMessages"))
+            .and(body_json(serde_json::json!({
+                "message@odata.bind":
+                    "https://graph.microsoft.com/v1.0/chats/19:abc@thread.v2/messages/1700000000000"
+            })))
+            .respond_with(
+                ResponseTemplate::new(201)
+                    .set_body_json(serde_json::json!({"id": "1700000000000"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pinned = pin_chat_message_at(
+            &test_client(),
+            &format!("{}/chats/19:abc@thread.v2/pinnedMessages", server.uri()),
+            "19:abc@thread.v2",
+            "1700000000000",
+        )
+        .await
+        .unwrap();
+        assert_eq!(pinned.id.as_deref(), Some("1700000000000"));
+    }
+
+    #[test]
+    fn pinned_message_endpoints_are_on_chats() {
+        assert_eq!(
+            endpoints::chat_pinned_messages("19:abc@thread.v2"),
+            "https://graph.microsoft.com/v1.0/chats/19:abc@thread.v2/pinnedMessages"
+        );
+        assert_eq!(
+            endpoints::chat_pinned_message("19:abc@thread.v2", "1700000000000"),
+            "https://graph.microsoft.com/v1.0/chats/19:abc@thread.v2/pinnedMessages/1700000000000"
+        );
+    }
+
+    /// Unpinning answers 204; a message that is not pinned gets a bare 404,
+    /// which the error turns into one naming the message and the chat.
+    #[tokio::test]
+    async fn unpin_chat_message_accepts_no_content_and_explains_a_404() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/chats/19:abc@thread.v2/pinnedMessages/pinned"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/chats/19:abc@thread.v2/pinnedMessages/loose"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "error": {"code": "NotFound", "message": "NotFound"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = |id: &str| {
+            format!(
+                "{}/chats/19:abc@thread.v2/pinnedMessages/{id}",
+                server.uri()
+            )
+        };
+        unpin_chat_message_at(&test_client(), &url("pinned"), "19:abc@thread.v2", "pinned")
+            .await
+            .unwrap();
+        let err = unpin_chat_message_at(&test_client(), &url("loose"), "19:abc@thread.v2", "loose")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TeamsError::NotFound(_)), "{err:?}");
+        assert!(
+            err.to_string()
+                .contains("message loose is not pinned in chat 19:abc@thread.v2"),
+            "{err}"
+        );
+        assert_eq!(err.exit_code(), 5);
     }
 
     #[tokio::test]

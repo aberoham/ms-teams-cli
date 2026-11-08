@@ -90,25 +90,9 @@ pub fn channel_message_replies(team_id: &str, channel_id: &str, message_id: &str
     format!("{GRAPH_V1}/teams/{team_id}/channels/{channel_id}/messages/{message_id}/replies")
 }
 
-pub fn message_set_reaction(team_id: &str, channel_id: &str, message_id: &str) -> String {
-    format!("{GRAPH_V1}/teams/{team_id}/channels/{channel_id}/messages/{message_id}/setReaction")
-}
-
-pub fn message_unset_reaction(team_id: &str, channel_id: &str, message_id: &str) -> String {
-    format!("{GRAPH_V1}/teams/{team_id}/channels/{channel_id}/messages/{message_id}/unsetReaction")
-}
-
 // --- Chat Messages ---
 pub fn chat_messages(chat_id: &str) -> String {
     format!("{GRAPH_V1}/chats/{chat_id}/messages")
-}
-
-pub fn chat_message_set_reaction(chat_id: &str, message_id: &str) -> String {
-    format!("{GRAPH_V1}/chats/{chat_id}/messages/{message_id}/setReaction")
-}
-
-pub fn chat_message_unset_reaction(chat_id: &str, message_id: &str) -> String {
-    format!("{GRAPH_V1}/chats/{chat_id}/messages/{message_id}/unsetReaction")
 }
 
 pub fn chat_message(chat_id: &str, message_id: &str) -> String {
@@ -152,12 +136,13 @@ pub fn me_chat_message_action(chat_id: &str, message_id: &str, action: &str) -> 
 }
 
 // --- Pinned Messages ---
-pub fn channel_pinned_messages(team_id: &str, channel_id: &str) -> String {
-    format!("{GRAPH_V1}/teams/{team_id}/channels/{channel_id}/pinnedMessages")
+// Chats only: Graph has no `pinnedMessages` segment on channels.
+pub fn chat_pinned_messages(chat_id: &str) -> String {
+    format!("{GRAPH_V1}/chats/{chat_id}/pinnedMessages")
 }
 
-pub fn channel_pinned_message(team_id: &str, channel_id: &str, pinned_message_id: &str) -> String {
-    format!("{GRAPH_V1}/teams/{team_id}/channels/{channel_id}/pinnedMessages/{pinned_message_id}")
+pub fn chat_pinned_message(chat_id: &str, pinned_message_id: &str) -> String {
+    format!("{GRAPH_V1}/chats/{chat_id}/pinnedMessages/{pinned_message_id}")
 }
 
 // --- Chats ---

@@ -1,4 +1,4 @@
-.TH TEAMS 1 "October 4, 2026" "teams-cli 0.9.0" "User Commands"
+.TH TEAMS 1 "November 1, 2026" "teams-cli 0.12.0" "User Commands"
 .SH NAME
 teams \- Microsoft Teams CLI for Microsoft Graph automation
 .SH SYNOPSIS
@@ -60,11 +60,11 @@ Set page size for paginated list commands.
 Follow Graph pagination and return all pages.
 .SH AUTHENTICATION
 .nf
-teams auth login [--client-credentials] [--device-code] [--client-id ID] [--client-secret SECRET] [--tenant-id ID] [--scopes SCOPES]
+teams auth login [--client-credentials] [--device-code] [--client-id ID] [--client-secret SECRET] [--tenant-id ID] [--redirect-uri URI] [--scopes SCOPES]
 teams auth refresh [--scopes SCOPES]
 teams auth status
-teams auth consent-url [--client-id ID] [--tenant-id ID] [--scopes SCOPES]
-teams auth doctor [--client-id ID] [--tenant-id ID]
+teams auth consent-url [--client-id ID] [--tenant-id ID] [--redirect-uri URI] [--scopes SCOPES]
+teams auth doctor [--client-id ID] [--tenant-id ID] [--redirect-uri URI]
 teams auth list
 teams auth switch NAME
 teams auth logout [--profile NAME] [--all]
@@ -78,10 +78,13 @@ registrations can still be selected with
 .B --client-id
 and
 .B --tenant-id.
-A successful delegated login saves those two flags to the profile's
-.B client_id
+A successful delegated login saves those two flags, and
+.B --redirect-uri,
+to the profile's
+.B client_id,
+.B tenant_id
 and
-.B tenant_id,
+.B redirect_uri,
 so the profile's next login reuses them; values from the environment, and a
 client credentials login, are never saved.
 Client credentials always require explicit customer app credentials.
@@ -96,6 +99,15 @@ or
 then the profile
 .B scopes
 field, then the built-in default delegated scopes.
+The browser login redirect URI is
+.B --redirect-uri
+or
+.B TEAMS_CLI_REDIRECT_URI,
+then the profile
+.B redirect_uri
+field, then
+.B http://localhost/callback.
+A URI without a port gets a free port from the operating system.
 .B teams auth refresh
 silently redeems the stored refresh token for the resolved scopes, picking up
 newly admin-consented permissions without a browser; without an explicit
@@ -165,20 +177,36 @@ teams channel members remove TEAM_ID CHANNEL_ID MEMBER_ID
 .nf
 teams message send (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID) [--body TEXT | --stdin] [--content-type text|html] [--adaptive-card PATH] [--image PATH]... [--attach PATH]... [--mention USER]... [--subject TEXT] [--quote MESSAGE_ID]...
 teams message list (--team TEAM_ID --channel CHANNEL_ID [--message-id ROOT_MESSAGE_ID] | --chat CHAT_ID)
-teams message get --team TEAM_ID --channel CHANNEL_ID (MESSAGE_ID | --message MESSAGE_ID) [--with-attachments]
+teams message get (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) [--with-attachments]
 teams message attachments list (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID)
 teams message attachments download (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) [--index N] [--dir DIR | --path FILE]
 teams message attachments delete (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) [--index N] --yes
 teams message reply --team TEAM_ID --channel CHANNEL_ID --message-id MESSAGE_ID [--body TEXT | --stdin] [--content-type text|html] [--image PATH]... [--attach PATH]... [--mention USER]...
 teams message reply --team TEAM_ID --channel CHANNEL_ID --message MESSAGE_ID --body TEXT
-teams message update (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) --body TEXT [--content-type text|html]
+teams message update (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) (--body TEXT | --stdin) [--content-type text|html] [--mention USER]...
 teams message delete (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) --yes
 teams message undelete (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID)
-teams message react (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID) --message-id MESSAGE_ID (REACTION | --reaction REACTION)
-teams message unreact (--team TEAM_ID --channel CHANNEL_ID | --chat CHAT_ID) --message-id MESSAGE_ID (REACTION | --reaction REACTION)
-teams message pin --team TEAM_ID --channel CHANNEL_ID (MESSAGE_ID | --message MESSAGE_ID)
-teams message unpin --team TEAM_ID --channel CHANNEL_ID (PINNED_MESSAGE_ID | --pinned-message-id PINNED_MESSAGE_ID)
+teams message react (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) --message-id MESSAGE_ID (REACTION | --reaction REACTION)
+teams message unreact (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) --message-id MESSAGE_ID (REACTION | --reaction REACTION)
+teams message pin --chat CHAT_ID (MESSAGE_ID | --message MESSAGE_ID)
+teams message unpin --chat CHAT_ID (MESSAGE_ID | --message MESSAGE_ID)
 .fi
+.PP
+.B message pin
+and
+.B unpin
+work in chats only: Microsoft Graph has no pinned messages for channel posts,
+so
+.B --team
+and
+.B --channel
+are refused with exit code 2. In a chat the pinned-message ID is the message
+ID, so unpin takes the message ID;
+.B --pinned-message-id
+remains an alias of
+.B --message.
+Pinning a pinned message again succeeds without effect; unpinning a message
+that is not pinned exits with code 5.
 .PP
 Microsoft Graph expects a reaction as an emoji character, so a reaction may be
 given as the character itself, for example
@@ -207,6 +235,16 @@ and
 A user has one reaction per message, so reacting again replaces the previous
 one; unreacting a reaction that is not set succeeds without effect.
 .PP
+.B --reply REPLY_ID
+on get, update, react, unreact, delete, undelete and attachments targets a
+reply in a channel thread: MESSAGE_ID is then the parent post. It needs
+.B --team
+and
+.B --channel;
+with
+.B --chat
+it is a usage error (exit code 2).
+.PP
 .B message list --message-id ROOT_MESSAGE_ID
 lists the replies under that channel thread root. The global
 .B --page-size
@@ -216,7 +254,7 @@ follows the complete replies collection.
 .PP
 .B --mention USER
 (repeatable) tags a person as a real Teams @mention in a chat send, channel
-send, or channel reply;
+send, channel reply, or edit;
 USER may be an Entra object ID or UPN, and the display name is resolved
 through Microsoft Graph. Graph requires an HTML body plus a synchronized
 .B mentions
@@ -224,6 +262,30 @@ array, so the CLI builds both: a plain-text body is converted to HTML (escaped,
 line breaks preserved), the <at> elements are prepended to the body in flag
 order, and a mention by itself counts as a body. Raw <at> markup typed into an
 HTML body is rejected before anything is sent.
+.PP
+To place a mention inside the body, write
+.B {@N}
+where it goes, N being the 0-based position of the
+.B --mention
+flag;
+.B {@}
+means
+.B {@0}
+when there is one. A person placed twice gets two <at> elements. With tokens,
+every
+.B --mention
+must be placed and every token must match one, or the command exits with code
+2. Write
+.B {{@0}}
+for the literal text {@0}, with or without
+.B --mention.
+A body with no {@N} or {@} tokens is sent as before.
+.PP
+.B message update --mention USER
+sends the body and the mentions array together, so an edit can add or keep a
+mention. The edit replaces the body: repeat
+.B --mention
+for each mention that should stay.
 .PP
 .B --subject TEXT
 sets the subject line on a channel root message, the bold title Teams shows
@@ -393,9 +455,9 @@ without it, the listener warns that notifications are not authenticated.
 .PP
 Behind a relay, POST the raw Graph body
 .B {"value":[...]}
-to / or /webhook, and answer Graph's validationToken request at the public
-edge. Responses: 202 queued, or dropped for a wrong clientState (do not
-retry); 400 malformed (do not retry); 408 body not received within 10
+to /, /webhook or /lifecycle, and answer Graph's validationToken request
+at the public edge. Responses: 202 queued, or dropped for a wrong clientState
+(do not retry); 400 malformed (do not retry); 408 body not received within 10
 seconds; 413 body over 1 MiB (do not retry); 503 output queue full because
 the stdout reader is behind, or shutting down (retry with backoff). At most 64
 connections are served at once, and headers must arrive within 10 seconds.
@@ -434,6 +496,10 @@ requires in each notification's clientState. Same as
 .TP
 .B TEAMS_CLI_TENANT_ID
 Azure AD tenant ID.
+.TP
+.B TEAMS_CLI_REDIRECT_URI
+Redirect URI for the browser login. Same precedence as
+.B --redirect-uri.
 .TP
 .B TEAMS_CLI_PROFILE
 Named credential profile. Overridden by
