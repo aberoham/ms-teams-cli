@@ -1,5 +1,83 @@
 # Changelog
 
+## v0.12.0 - 2026-11-01
+
+### Added
+
+- `teams message update`, `get`, `react` and `unreact` take `--reply REPLY_ID` to target a reply in a channel thread, as `delete` and `undelete` already did: the message ID is then the parent post and the request goes to `.../messages/{parent}/replies/{reply}`. `--reply` with `--chat` is a usage error (exit code 2).
+- `teams message update --stdin` reads the new body from standard input, like `send` and `reply`.
+- `--mention` bodies can place each mention with `{@N}`, `N` being the 0-based `--mention` flag: `--mention sophie@contoso.com --body "Hey {@0}, could you review this?"` sends `Hey @Sophie Daniels, could you review this?` instead of prepending the mention. `{@}` is the only mention; `{{@0}}` is the literal text. A person placed twice gets two `<at>` elements and two `mentions` entries. A token without a matching `--mention`, or a `--mention` the body does not place, is invalid input (exit code 2). Works on `send`, `reply` and `update`; a body without tokens is sent as before.
+- `teams message get --chat CHAT_ID` reads a single chat message, alongside `--team`/`--channel` (and `--reply`) for channel messages.
+- `teams message update --mention USER` (repeatable) sends the body and the synchronized `mentions` array in one PATCH, so an edit can add a mention or keep an existing one, on chat messages, channel posts and replies.
+
+### Changed
+
+- Message bodies now read `{@N}` and `{@}` as mention tokens, with or without `--mention`: such a body without `--mention` exits with code 2 instead of being sent as typed, and `{{@N}}` / `{{@}}` are sent as `{@N}` / `{@}`. Other braces are unaffected. Tokens are checked against the `--mention` flags before any of them is looked up, so a token typo exits 2 without a Graph call.
+- `teams message update` with an HTML body now rejects raw `<at>` markup (exit code 2), as `send` and `reply` already did; it used to be sent in a PATCH with no `mentions`. Use `--mention` instead.
+- `teams message unpin` takes the message ID as `MESSAGE_ID` or `--message`, the same ID `pin` takes, since a chat's pinned-message ID is the message ID; `--pinned-message-id` remains an alias. Unpinning a message that is not pinned is a not-found error (exit code 5) naming the message and chat.
+- A 403 from `message update` on a channel post or reply now names the `ChannelMessage.ReadWrite` scope, as `message delete` does. A 404 on a reply names both the parent and the reply ID.
+
+### Fixed
+
+- `teams message pin` and `unpin` never worked: they targeted a channel `pinnedMessages` route that Microsoft Graph does not have (400 "Resource not found for the segment 'pinnedMessages'"). Graph pins messages in chats only, so both commands now take `--chat CHAT_ID`; `--team`/`--channel` is refused with exit code 2 and an explanation before anything is sent.
+
+## v0.11.0 - 2026-10-27
+
+### Added
+
+- `--redirect-uri`, `TEAMS_CLI_REDIRECT_URI` and the profile's `redirect_uri` select the browser login's redirect URI for `auth login`, `auth consent-url` and `auth doctor`. The login listens on the URI's host and port (both loopback addresses for `localhost`) for a request to the URI's path carrying the login's `state`; the flag is saved to the profile with the IDs. A redirect URI without a port gets a free port from the OS at each login, as MSAL does; the identity platform allows this because it ignores the port of a localhost redirect URI, so `--redirect-uri http://localhost` works for an app registered that way.
+- `teams subscribe create --lifecycle-url URL` sets the subscription's `lifecycleNotificationUrl`, which Graph requires for Teams subscriptions longer than one hour. Graph validates that URL too, so `teams listen` answers validation and notifications on `/lifecycle` as well as `/` and `/webhook`, and one tunnel serves both.
+- `teams listen --client-state SECRET` (or `TEAMS_CLI_CLIENT_STATE`) drops notifications whose `clientState` is missing or different, with a warning on stderr that does not include either value. Without it, the listener warns at startup that notifications are not authenticated.
+- `teams listen --bind ADDR` chooses the listening address, and `--port 0` picks a free port; the startup line names the address actually bound.
+- Each `teams listen` line now carries every field Graph sent (`subscriptionExpirationDateTime`, `lifecycleEvent`, `encryptedContent` and so on) and `kind`: `lifecycle` when `lifecycleEvent` is present, else `change`. The README's "Running behind a relay" says what a relay should POST and which statuses to retry.
+- Agent skills for AI agents under `skills/`: `teams-cli-setup`, `teams-cli-messaging`, `teams-cli-admin` and `teams-cli-automation`. Install them with `npx skills add osodevops/ms-teams-cli`.
+
+### Changed
+
+- **`teams listen` binds `127.0.0.1` by default instead of `0.0.0.0`.** Pass `--bind 0.0.0.0` to accept connections from other hosts.
+- `teams listen` answers notifications with 202 once they are queued for stdout, instead of 200 after printing, so a slow stdout reader no longer holds the HTTP response; when the queue (8 MiB) is full it answers 503 so the sender retries. Validation requests are answered whatever the queue state. On Ctrl+C or SIGTERM it stops admitting notifications (503) and writes out every one it already acknowledged before exiting; a second signal abandons them, and any acknowledged notification left unwritten, or lost to a closed stdout, is counted on stderr with exit code 1 (previously a closed stdout exited 0).
+- `teams listen` limits bodies to 1 MiB (413), allows 10 seconds for headers and for the body (408), and serves at most 64 connections at once.
+- `teams listen` no longer prints `clientState`.
+- The default redirect URI is now `http://localhost/callback` on a free port instead of `http://localhost:8400/callback`, so a busy port 8400 no longer blocks login. App registrations with `http://localhost:8400/callback` keep working because the port is ignored.
+- Updated Rust dependencies (`tokio` 1.54.1, `serde_json` 1.0.154, `uuid` 1.28.0, `webbrowser` 1.2.5) and the CI and release workflows' `Swatinem/rust-cache` pin to v2.9.3. `rust-version` in `Cargo.toml` is now 1.89, the oldest Rust the dependencies build with; it said 1.75.
+- Updated `sha2` to 0.11.1 (it computes the PKCE code challenge for browser login). The challenge is now unit-tested against the RFC 7636 example, so a hashing or encoding change cannot slip through as failed logins.
+
+### Fixed
+
+- Log lines on stderr are coloured only when stderr is a terminal and `NO_COLOR` is unset, so `teams listen 2>listen.log` and other redirected logs no longer contain ANSI escape codes. `--no-color` still turns colour off.
+- `teams listen` on a port already in use exits with code 10 (`CONFIG_ERROR`), naming the address and the OS error, instead of reporting an authentication failure (exit code 3).
+- The browser login keeps serving its loopback redirect URI until the callback arrives. It served one connection, so a browser's speculative connection or a second request could leave it waiting forever or failing with "Failed to receive auth code from callback". A redirect carrying the identity platform's `error` (a declined consent, say) now fails the login at once with `error` and `error_description` (exit code 3) instead of that generic message, requests to other paths or with another `state` are ignored, and the login gives up after 10 minutes with no callback.
+- Updated `rustls-webpki` to 0.103.16 and `webpki-roots` to 1.0.11 for RUSTSEC-2026-0382 and RUSTSEC-2026-0381, under which certificates issued by distrusted intermediates could still be accepted. The `tokio` update also clears RUSTSEC-2026-0386 (unsound `AsyncFd` constructors).
+- `teams subscribe list` failed with HTTP 400 ("Query option 'Top' is not allowed"), because Graph rejects `$top` on `/subscriptions`. It now pages by `@odata.nextLink` alone, as `channel list` and `chat members list` do, and ignores `--page-size`.
+
+## v0.10.0 - 2026-10-15
+
+### Added
+
+- List commands without `--all-pages` report whether the result is complete: JSON `metadata.has_more`, plus `metadata.next_link` (Graph's `@odata.nextLink`) when more pages exist. Previously a truncated page looked identical to a complete collection. With `--all-pages`, `has_more` is false. `data` is unchanged. Human and plain output print "More results available; use --all-pages" on stderr.
+- `teams message attachments delete (--chat C | --team T --channel CH [--reply R]) --message M [--index N] --yes` deletes files attached with `message send --attach` from the sender's OneDrive. Each `reference` attachment is resolved through Graph's shares API and deleted only when it is in the caller's own drive; inline images, other people's files and channel files are skipped with a reason. A file already gone counts as deleted. The message and its file card are left as they are; `message delete` is separate.
+
+### Changed
+
+- `Retry-After` is read in its HTTP-date form as well as seconds, honored on retried 5xx responses as well as 429, and capped at 300 seconds.
+- Updated Rust dependencies (`dirs` 7.0.0, `comfy-table` 8.0.1, `hyper` 1.12.0, `tokio` 1.53.2, `uuid` 1.27.0, and `want` 0.3.2) and the release workflow's artifact upload/download actions.
+
+### Fixed
+
+- Updated `rustls` to 0.23.46 and `quinn-proto` to 0.11.18 to resolve nine RustSec advisories (RUSTSEC-2026-0338 through RUSTSEC-2026-0342 and RUSTSEC-2026-0346 through RUSTSEC-2026-0349).
+- `teams team update` and `teams channel update` no longer fail with "Failed to parse API response" (exit 1) after a successful update. Graph answers these with 204 No Content; every PATCH-based update now reads the resource back when the response has no body, so the output is unchanged. If that read fails, the error says the update succeeded (exit 1).
+- A POST is no longer replayed after a 5xx or a network failure once sent, which could post a message twice. It fails with exit code 8 or 7 and a hint to check before re-sending. A 429 or a connection that was never made is still retried, and read-only POSTs (`search`, `presence get-batch`) retry as before.
+- A POST answered 2xx whose response body cannot be read or parsed now says Graph performed it and not to re-send, instead of a bare network or parse error.
+- `teams auth status` reports `user` and `tenant_id` at the top level, as `auth list` does, not only inside `token_diagnostics`. A token store that cannot be read is now `KEYRING_ERROR` (exit code 10) instead of `authenticated: false`, and a signed-out profile says why in `reason`.
+- A token store that cannot be read (a locked keychain, a denied prompt, an SSH session) is reported as `KEYRING_ERROR` (exit code 10) with its cause, instead of "Not authenticated" (exit code 3). Only a profile with no stored token is "Not authenticated".
+- A profile index that cannot be read or parsed is an error (exit code 10) instead of an empty list. `auth login` no longer rewrites it to hold only the new profile, orphaning the rest; `auth list` and `auth logout --all` no longer report no profiles as a success.
+- `teams auth switch` with `--config` wrote the selected profile to the default config file, overwriting it with the `--config` file's contents and leaving that file unchanged. It now saves to the `--config` file, and a failed save is a config error (exit code 10) instead of a warning beside a success.
+- `teams config path` ignored `--config` and always reported the default path. It now reports the file in use, with `source` set to `flag` or `default`.
+- Config saves (`config set`, `config init`, `auth switch`) truncated the file and wrote it in place, so a failed write could leave a partial config. They now write a temporary file and rename it over the original, as `auth login` already did.
+- A new profile's name is limited to 1-64 of `A-Z a-z 0-9 . _ -`, not `.` or `..`. `TEAMS_CLI_TOKEN_STORE=file` maps `:`, `/` and `\` to `.` in token file names, so `customer/a` and `customer.a` shared one token and could run as the wrong account. `auth login`, `config set profiles.<name>...` and `config set default.profile` refuse another name as invalid input (exit code 2). Profiles already in the config or the token index keep working under their names. A new name whose token file name matches an existing profile's, ignoring case, is refused too.
+- Attachment deletion also rejects `remoteItem` references, including local shortcuts into another drive.
+- `message attachments download` and `file download --path` write through a uniquely named, exclusively created temp file in the target directory, then rename it into place. Attachments used a fixed `<target>.part`, so a symlink there redirected the write, a stray `.part` was clobbered, and concurrent downloads to one target shared a temp file; `file download` wrote in place, through any symlink at the target, and left a truncated file on failure; a symlink at the target is now replaced. A failed write now leaves no temp file. An existing target is still overwritten and keeps its mode, and `message attachments download --path -` still streams to stdout.
+
 ## v0.9.1-alpha.2 - 2026-10-11
 
 Fork prerelease: upstream v0.9.0 with the changes below. v0.9.1-alpha.1 had all of them except the `auth status` fields, log colour and `message attachments delete`.

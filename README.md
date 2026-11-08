@@ -83,6 +83,22 @@ scoop install teams
 cargo install --git https://github.com/osodevops/ms-teams-cli
 ```
 
+## Agent Skills
+
+Install the agent skills so Claude, Codex and other AI agents know how to drive `teams`: sign-in and output contract, messaging, team administration, and automation.
+
+```bash
+npx skills add osodevops/ms-teams-cli
+npx skills add osodevops/ms-teams-cli --skill teams-cli-messaging
+```
+
+| Skill | Use it for |
+|-------|------------|
+| `teams-cli-setup` | Install, sign in, profiles, CI auth, JSON envelope and exit codes |
+| `teams-cli-messaging` | Read, send and reply in chats and channels, attachments, files |
+| `teams-cli-admin` | Teams, channels, members, tags, apps and tabs |
+| `teams-cli-automation` | Presence, meetings, notifications, webhooks and polling |
+
 ## Documentation
 
 - [Project website](http://msteamscli.com/)
@@ -124,7 +140,7 @@ The CLI has OSO's multi-tenant delegated public client app baked in:
 ```text
 Client ID: fba1b5d0-fdd0-4fe2-9729-9ccdc38f9595
 Default authority: organizations
-Loopback redirect URI: http://localhost:8400/callback
+Loopback redirect URI: http://localhost/callback (any port)
 ```
 
 Customer admin consent:
@@ -200,11 +216,14 @@ teams auth login --device-code --scopes "User.Read ChannelMessage.Read.All offli
 # Browser-based login with a customer-owned app
 teams auth login --client-id <client-id> --tenant-id <tenant-id>
 
+# Browser login with an app whose registered redirect URI is http://localhost (no path)
+teams auth login --client-id <client-id> --tenant-id <tenant-id> --redirect-uri http://localhost
+
 # Device code flow with a customer-owned app
 teams auth login --device-code --client-id <client-id> --tenant-id <tenant-id>
 ```
 
-A delegated login saves `--client-id` and `--tenant-id` to the profile once it
+A delegated login saves `--client-id`, `--tenant-id` and `--redirect-uri` to the profile once it
 succeeds, so the profile's next `teams auth login` reuses that app registration
 instead of the built-in one. Environment variables and client credentials
 logins are never saved; see [docs/auth.md](docs/auth.md).
@@ -253,6 +272,14 @@ joined the defaults in this way.
 Delegated scope resolution follows the same order: `--scopes` (or
 `TEAMS_CLI_SCOPES`), then the profile's `scopes` field, then the built-in
 default scope set.
+
+The browser login's redirect URI follows it too: `--redirect-uri` (or
+`TEAMS_CLI_REDIRECT_URI`), then the profile's `redirect_uri`, then
+`http://localhost/callback`. The CLI listens on the URI's host and port for
+the callback on the URI's path, and the URI must be registered on the app.
+A URI without a port gets a free port from the OS at each login; the identity
+platform ignores the port of a localhost redirect URI, so the registered URI
+needs none.
 
 When permissions are consented after login (for example an admin grants a new
 delegated scope), `teams auth refresh` silently redeems the stored refresh
@@ -387,6 +414,7 @@ teams message send --team <team-id> --channel <channel-id> --body "Hello"
 teams message send --chat <chat-id> --body "Hello"
 teams message send --team <team-id> --channel <channel-id> --body "<h1>Rich</h1>" --content-type html
 teams message send --chat <chat-id> --mention <user-id-or-upn> --body "Please review and send the drafts."
+teams message send --chat <chat-id> --mention <user-id-or-upn> --body "Hey {@0}, could you review this?"
 teams message send --chat <chat-id> --quote <msg-id> --body "Yes, that works."
 teams message send --team <team-id> --channel <channel-id> --mention <user-id> --mention <user-id> --body "Deploy is going out now."
 teams message send --team <team-id> --channel <channel-id> --subject "Release plan" --body "Details inside."
@@ -395,22 +423,29 @@ teams message list --team <team-id> --channel <channel-id>
 teams message list --team <team-id> --channel <channel-id> --message-id <root-message-id> --all-pages
 teams message list --chat <chat-id>
 teams message get --team <team-id> --channel <channel-id> --message <msg-id>
+teams message get --team <team-id> --channel <channel-id> --reply <reply-id> <parent-msg-id>
+teams message get --chat <chat-id> <msg-id>
 teams message attachments delete --chat <chat-id> --message <msg-id> [--index N] --yes
 teams message reply --team <team-id> --channel <channel-id> --message <msg-id> --mention <user-id-or-upn> --body "Thanks!"
 teams message update --team <team-id> --channel <channel-id> --message <msg-id> --body "Corrected"
 teams message update --chat <chat-id> --message <msg-id> --body "Corrected"
+teams message update --chat <chat-id> --message <msg-id> --mention <user-id-or-upn> --body "Corrected, {@0}"
+teams message update --team <team-id> --channel <channel-id> --reply <reply-id> <parent-msg-id> --content-type html --body "<p>Corrected</p>"
 teams message delete --chat <chat-id> --message <msg-id> --yes
 teams message delete --team <team-id> --channel <channel-id> --message <msg-id> --yes
 teams message undelete --chat <chat-id> --message <msg-id>
 teams message react --team <team-id> --channel <channel-id> --message <msg-id> --reaction like
 teams message unreact --team <team-id> --channel <channel-id> --message <msg-id> --reaction like
 teams message react --chat <chat-id> --message <msg-id> --reaction eyes
+teams message react --team <team-id> --channel <channel-id> --reply <reply-id> --message <parent-msg-id> --reaction like
 teams message unreact --chat <chat-id> --message <msg-id> --reaction 👀
-teams message pin --team <team-id> --channel <channel-id> --message <msg-id>
-teams message unpin --team <team-id> --channel <channel-id> --pinned-message-id <id>
+teams message pin --chat <chat-id> --message <msg-id>
+teams message unpin --chat <chat-id> --message <msg-id>
 ```
 
-`message list --message-id ROOT_MESSAGE_ID` lists the replies under that channel thread root. The global `--page-size` and `--all-pages` options apply to the replies collection.
+`message list --message-id ROOT_MESSAGE_ID` lists the replies under that channel thread root. To act on one reply, `message get`, `update`, `react`, `unreact`, `delete` and `undelete` take `--reply REPLY_ID` with `--team` and `--channel`; the message ID is then the parent post. The global `--page-size` and `--all-pages` options apply to the replies collection.
+
+`message pin` and `unpin` work in chats only: Microsoft Graph has no pinned messages for channel posts, so `--team`/`--channel` is refused with exit code 2. In a chat the pinned-message ID is the message ID, so `unpin` takes the same ID as `pin` (`--pinned-message-id` still works as an alias). Pinning a pinned message again succeeds without effect; unpinning a message that is not pinned exits with code 5.
 
 `message send --chat CHAT_ID --attach FILE` uploads to your OneDrive and attempts
 to share the file with the chat's other members without notification email.
@@ -426,14 +461,26 @@ your own OneDrive are deleted; inline images, files shared by others and
 channel files are skipped with a reason. The message and its file card stay;
 use `message delete` for the message.
 
-The `--mention USER` flag on `message send` and `message reply` tags a person as a real Teams @mention — the kind that pings
+The `--mention USER` flag on `message send`, `message reply` and `message update` tags a person as a real Teams @mention — the kind that pings
 them, not literal `@Name` text. The flag is repeatable and `USER` may be an Entra object ID
 or UPN; the display name is resolved through Microsoft Graph. It works for chat sends,
 channel sends, and channel replies. Graph requires an HTML body plus a synchronized
 `mentions` array, so the CLI builds both: a plain-text body is safely converted to HTML (escaped, line breaks
 preserved), the `<at>` elements are prepended in flag order, and a mention by itself counts
-as a body (`--body` optional). Raw `<at>` markup typed into an HTML body is rejected with
+as a body (`--body` optional on send and reply). Raw `<at>` markup typed into an HTML body is rejected with
 exit code 2 before anything is sent.
+
+To place a mention inside the sentence, write `{@N}` in the body, `N` being the 0-based
+position of the `--mention` flag: `--mention sophie@contoso.com --body "Hey {@0}, could you
+review this?"`. `{@}` means `{@0}` when there is one `--mention`. It works for text and HTML
+bodies; a person placed twice gets two `<at>` elements. With tokens, every `--mention` must be
+placed and every token must match a `--mention`, or the command exits with code 2. Write
+`{{@0}}` for the literal text `{@0}`, with or without `--mention`. A body with no `{@N}` or
+`{@}` tokens is sent as before.
+
+`message update --mention USER` sends the body and the `mentions` array together, so an edit
+can add a mention or keep an existing one. The edit replaces the body: repeat `--mention`
+for each mention that should stay.
 
 `message send --subject TEXT` sets the subject line on a channel root message — the bold
 title Teams shows above the body, the same field the Teams client offers behind "Add a
@@ -463,6 +510,13 @@ teams message send --team <team-id> --channel <channel-id> \
 teams message reply --team <team-id> --channel <channel-id> \
   --message-id <root-message-id> --mention sophie@example.com \
   --body "I have picked this up."
+
+teams message send --chat <chat-id> \
+  --mention sophie@example.com --mention <user-id> \
+  --body "Hey {@0}, could you review this? cc {@1}"
+
+teams message update --chat <chat-id> <msg-id> \
+  --mention sophie@example.com --body "Hey {@0}, could you review this today?"
 ```
 
 Reactions accept either a channel (`--team` with `--channel`) or a chat (`--chat`), never both.
@@ -615,7 +669,7 @@ teams listen --port 8080
 teams listen --port 8080 | jq '.changeType, .resource'
 ```
 
-The listener binds `127.0.0.1` unless `--bind` says otherwise (`--bind 0.0.0.0` for all interfaces). Each line is one notification with every field Graph sent except `clientState`, plus `"kind": "change"` or, for lifecycle events (`lifecycleEvent`), `"kind": "lifecycle"`.
+The listener binds `127.0.0.1` unless `--bind` says otherwise (`--bind 0.0.0.0` for all interfaces). It answers Graph's validation request and accepts notifications on `/`, `/webhook` and `/lifecycle`, so one tunnel can serve both `--webhook-url` and `--lifecycle-url` (Graph validates both when the subscription is created). Each line is one notification with every field Graph sent except `clientState`, plus `"kind": "change"` or, for lifecycle events (`lifecycleEvent`), `"kind": "lifecycle"`.
 
 Pass the subscription's `--client-state` to `listen` too (or set `TEAMS_CLI_CLIENT_STATE`) and notifications without that `clientState` are dropped with a warning on stderr. Without it, anyone who can reach the port can inject lines, and the listener says so at startup.
 
@@ -634,7 +688,7 @@ teams listen --port 8080
 
 A relay can forward notifications to `teams listen` instead of Graph calling it directly:
 
-- POST the raw Graph body, `{"value":[...]}`, to `/` or `/webhook`.
+- POST the raw Graph body, `{"value":[...]}`, to `/`, `/webhook` or `/lifecycle`.
 - Graph's validation request (`?validationToken=`) needs a synchronous reply within 10 seconds, so answer it at the public edge (echo the decoded token as `text/plain`) rather than forwarding it.
 - Bind to the interface the relay uses with `--bind`, and set `--client-state` so forged posts are dropped.
 
@@ -745,6 +799,7 @@ auth_flow = "device-code"
 | `TEAMS_CLI_CLIENT_ID` | Azure AD application (client) ID |
 | `TEAMS_CLI_CLIENT_SECRET` | Azure AD client secret |
 | `TEAMS_CLI_TENANT_ID` | Azure AD tenant ID |
+| `TEAMS_CLI_REDIRECT_URI` | Redirect URI for the browser login (same precedence as `--redirect-uri`; not saved to the profile) |
 | `TEAMS_CLI_PROFILE` | Named credential profile (overridden by `--profile`; an explicit value beats the config's `default.profile`) |
 | `TEAMS_CLI_SCOPES` | Delegated OAuth scopes for login (same precedence as `--scopes`; ignored by client credentials) |
 | `TEAMS_CLI_ACCESS_TOKEN` | Pre-obtained Microsoft Graph access token (skips login entirely; `--profile`/`TEAMS_CLI_PROFILE` do not affect which token is used) |

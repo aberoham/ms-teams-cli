@@ -19,6 +19,7 @@ fn teams_process() -> std::process::Command {
     cmd.env_remove("TEAMS_CLI_CLIENT_ID");
     cmd.env_remove("TEAMS_CLI_CLIENT_SECRET");
     cmd.env_remove("TEAMS_CLI_TENANT_ID");
+    cmd.env_remove("TEAMS_CLI_REDIRECT_URI");
     cmd.env_remove("TEAMS_CLI_ACCESS_TOKEN");
     cmd.env_remove("TEAMS_CLI_TOKEN_STORE");
     cmd
@@ -222,6 +223,160 @@ fn auth_login_help_documents_scopes_flag_and_env() {
             predicate::str::contains("--scopes <SCOPES>")
                 .and(predicate::str::contains("TEAMS_CLI_SCOPES")),
         );
+}
+
+#[test]
+fn auth_login_help_documents_redirect_uri_flag_and_env() {
+    teams()
+        .args(["auth", "login", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--redirect-uri <REDIRECT_URI>")
+                .and(predicate::str::contains("TEAMS_CLI_REDIRECT_URI")),
+        );
+}
+
+#[test]
+fn auth_consent_url_uses_the_default_redirect_uri() {
+    teams()
+        .args(["auth", "consent-url", "--output", "json"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains(r#""redirect_uri": "http://localhost/callback""#).and(
+                predicate::str::contains("redirect_uri=http%3A%2F%2Flocalhost%2Fcallback"),
+            ),
+        );
+}
+
+#[test]
+fn auth_consent_url_uses_redirect_uri_flag() {
+    teams()
+        .args([
+            "auth",
+            "consent-url",
+            "--redirect-uri",
+            "http://localhost:8400",
+            "--output",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains(r#""redirect_uri": "http://localhost:8400""#)
+                .and(predicate::str::contains(
+                    "redirect_uri=http%3A%2F%2Flocalhost%3A8400",
+                ))
+                .and(predicate::str::contains("%2Fcallback").not()),
+        );
+}
+
+#[test]
+fn auth_consent_url_uses_redirect_uri_env() {
+    let mut cmd = teams();
+    cmd.env("TEAMS_CLI_REDIRECT_URI", "http://127.0.0.1:9400");
+    cmd.args(["auth", "consent-url", "--output", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            r#""redirect_uri": "http://127.0.0.1:9400""#,
+        ));
+}
+
+#[test]
+fn auth_consent_url_uses_profile_redirect_uri() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(
+        &path,
+        r#"
+[profiles.customer]
+auth_app = "byo"
+client_id = "11111111-1111-1111-1111-111111111111"
+tenant_id = "22222222-2222-2222-2222-222222222222"
+redirect_uri = "http://localhost:9400"
+"#,
+    )
+    .unwrap();
+
+    teams()
+        .args([
+            "--config",
+            path.to_str().unwrap(),
+            "--profile",
+            "customer",
+            "auth",
+            "consent-url",
+            "--output",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            r#""redirect_uri": "http://localhost:9400""#,
+        ));
+
+    teams()
+        .args([
+            "--config",
+            path.to_str().unwrap(),
+            "--profile",
+            "customer",
+            "auth",
+            "consent-url",
+            "--redirect-uri",
+            "http://localhost:9500",
+            "--output",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            r#""redirect_uri": "http://localhost:9500""#,
+        ));
+}
+
+#[test]
+fn auth_doctor_reports_redirect_uri() {
+    teams()
+        .args([
+            "auth",
+            "doctor",
+            "--redirect-uri",
+            "http://localhost:8400",
+            "--output",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            r#""redirect_uri": "http://localhost:8400""#,
+        ));
+}
+
+#[test]
+fn auth_login_rejects_a_redirect_uri_that_is_not_loopback() {
+    teams()
+        .args(["auth", "login", "--redirect-uri", "http://10.0.0.1:8400"])
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("localhost"));
+    teams()
+        .args(["auth", "login", "--redirect-uri", "https://localhost:8400"])
+        .assert()
+        .code(2);
+    teams()
+        .args([
+            "auth",
+            "login",
+            "--device-code",
+            "--redirect-uri",
+            "http://10.0.0.1:8400",
+        ])
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("localhost"));
 }
 
 #[test]
@@ -663,6 +818,112 @@ fn message_send_help_advertises_repeatable_mention_flag() {
 }
 
 #[test]
+fn message_update_help_advertises_repeatable_mention_flag() {
+    teams()
+        .args(["message", "update", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--mention <USER>")
+                .and(predicate::str::contains("(repeatable)"))
+                .and(predicate::str::contains("[--mention <USER>]...")),
+        );
+}
+
+/// Mention placement errors are invalid input (exit code 2), raised before
+/// any request: here a token with no `--mention` to place.
+#[test]
+fn mention_token_without_mention_is_invalid_input() {
+    for args in [
+        vec![
+            "message",
+            "send",
+            "--chat",
+            "19:abc@thread.v2",
+            "--body",
+            "Hey {@0}",
+        ],
+        vec![
+            "message",
+            "update",
+            "--chat",
+            "19:abc@thread.v2",
+            "1",
+            "--body",
+            "Hey {@}",
+        ],
+    ] {
+        teams()
+            .env("TEAMS_CLI_ACCESS_TOKEN", "not-a-real-token")
+            .args(&args)
+            .args(["--output", "json"])
+            .assert()
+            .code(2)
+            .stdout(
+                predicate::str::contains("INVALID_INPUT")
+                    .and(predicate::str::contains("no --mention")),
+            );
+    }
+}
+
+/// A token that no `--mention` can fill is caught before the flags are looked
+/// up in Graph. The proxy points at a closed local port, so a lookup would end
+/// as a network error (exit 7) instead of the usage error (exit 2).
+#[test]
+fn mention_token_typo_is_rejected_before_any_user_lookup() {
+    let chat = ["--chat", "19:abc@thread.v2"];
+    let channel = ["--team", "T", "--channel", "C"];
+    for (args, expected) in [
+        (
+            [
+                &["message", "send"][..],
+                &chat,
+                &["--mention", "a@example.com"],
+            ]
+            .concat(),
+            "{@1} has no matching --mention",
+        ),
+        (
+            [
+                &["message", "reply", "--message-id", "P"][..],
+                &channel,
+                &["--mention", "a@example.com", "--mention", "b@example.com"],
+            ]
+            .concat(),
+            "{@} is only for a single --mention",
+        ),
+        (
+            [
+                &["message", "update", "P", "--reply", "R"][..],
+                &channel,
+                &["--mention", "a@example.com"],
+            ]
+            .concat(),
+            "{@1} has no matching --mention",
+        ),
+    ] {
+        let body = if expected.starts_with("{@}") {
+            "Hey {@}"
+        } else {
+            "Hey {@0} and {@1}"
+        };
+        teams()
+            .env("TEAMS_CLI_ACCESS_TOKEN", "not-a-real-token")
+            .env("HTTPS_PROXY", "http://127.0.0.1:9")
+            .env("https_proxy", "http://127.0.0.1:9")
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy")
+            .args(&args)
+            .args(["--body", body, "--retry", "0", "--output", "json"])
+            .assert()
+            .code(2)
+            .stdout(
+                predicate::str::contains("INVALID_INPUT").and(predicate::str::contains(expected)),
+            );
+    }
+}
+
+#[test]
 fn message_send_help_advertises_subject_flag() {
     teams()
         .args(["message", "send", "--help"])
@@ -879,6 +1140,27 @@ fn message_delete_and_undelete_accept_chat_and_reply_targets() {
     }
 }
 
+#[test]
+fn message_update_get_and_reactions_accept_reply_targets() {
+    for sub in ["update", "get", "react", "unreact"] {
+        teams()
+            .args(["message", sub, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--reply <REPLY>"));
+    }
+    teams()
+        .args(["message", "update", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains(
+                "teams message update (--team <TEAM> --channel <CHANNEL> [--reply <REPLY>] | --chat <CHAT>)",
+            )
+            .and(predicate::str::contains("--stdin")),
+        );
+}
+
 /// Deletion must be confirmed explicitly. Without `--yes` the command is
 /// refused before any token is resolved or request is sent, so the exit code
 /// is 2 (not the auth error a bare environment would otherwise produce) and
@@ -1056,13 +1338,76 @@ fn message_documented_flags_are_available() {
         .success()
         .stdout(predicate::str::contains("--reaction <REACTION>"));
 
+    // In a chat the pinned-message ID is the message ID, so unpin takes the
+    // same `--message` as pin and keeps `--pinned-message-id` as an alias.
     teams()
         .args(["message", "unpin", "--help"])
         .assert()
         .success()
+        .stdout(
+            predicate::str::contains("--message <MESSAGE>")
+                .and(predicate::str::contains("--pinned-message-id")),
+        );
+}
+
+/// Graph pins messages in chats only, so pin and unpin advertise `--chat` and
+/// hide the channel flags they keep for the explanation below.
+#[test]
+fn message_pin_and_unpin_target_chats() {
+    for sub in ["pin", "unpin"] {
+        teams()
+            .args(["message", sub, "--help"])
+            .assert()
+            .success()
+            .stdout(
+                predicate::str::contains(format!(
+                    "teams message {sub} --chat <CHAT> (MESSAGE_ID | --message <MESSAGE>)"
+                ))
+                .and(predicate::str::contains("--team").not())
+                .and(predicate::str::contains("--channel").not()),
+            );
+    }
+}
+
+/// The channel `pinnedMessages` route does not exist in Graph (400 "Resource
+/// not found for the segment"), so a channel pin is refused with an
+/// explanation before any token is needed: no credentials are set here.
+#[test]
+fn channel_pin_is_refused_before_credentials() {
+    for args in [
+        &["pin", "--team", "T", "--channel", "C", "M"][..],
+        &["unpin", "--team", "T", "--channel", "C", "M"],
+        &["pin", "--team", "T", "M"],
+    ] {
+        teams()
+            .arg("message")
+            .args(args)
+            .args(["--output", "json"])
+            .assert()
+            .code(2)
+            .stdout(
+                predicate::str::contains("INVALID_INPUT")
+                    .and(predicate::str::contains("only in chats"))
+                    .and(predicate::str::contains("--chat CHAT_ID")),
+            );
+    }
+}
+
+#[test]
+fn message_get_accepts_chat_targets() {
+    teams()
+        .args(["message", "get", "--help"])
+        .assert()
+        .success()
         .stdout(predicate::str::contains(
-            "--pinned-message-id <PINNED_MESSAGE_ID>",
+            "teams message get (--team <TEAM> --channel <CHANNEL> [--reply <REPLY>] | --chat <CHAT>)",
         ));
+    // A reply exists only in a channel thread.
+    teams()
+        .args(["message", "get", "--chat", "19:x", "--reply", "R", "P"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("cannot be used with"));
 }
 
 #[test]

@@ -24,7 +24,7 @@ Single-crate Rust binary. Key modules:
   - `auth.rs` — login (PKCE, device code, client credentials), status, list, switch, logout, token
   - `team.rs` — list, get, create, update, delete, clone, archive, unarchive, members
   - `channel.rs` — list, get, create, update, delete, members
-  - `message.rs` — send, list, get, reply, update, delete, undelete, react, unreact, pin, unpin
+  - `message.rs` — send, list, get, reply, update, delete, undelete, react, unreact, pin, unpin; attachments list/download/delete (delete requires --yes and skips remote items)
   - `chat.rs` — list, get, create, hide, unhide, members
   - `presence.rs` — get, set, set-preferred, clear, clear-preferred, status, get-batch
   - `search.rs` — messages, users, teams
@@ -86,7 +86,7 @@ CLI flags > env vars (TEAMS_CLI_CLIENT_ID, TEAMS_CLI_CLIENT_SECRET, TEAMS_CLI_TE
 
 ### Webhook Listener
 - `teams listen --port 8080` starts a hyper HTTP server on 127.0.0.1 (`--bind` to change)
-- Handles Graph subscription validation (echoes `?validationToken`)
+- Handles Graph subscription validation (echoes `?validationToken`) on `/`, `/webhook` and `/lifecycle`
 - Outputs change notifications as NDJSON to stdout via a bounded queue and writer thread: 202 once queued, 503 when full
 - `--client-state` / `TEAMS_CLI_CLIENT_STATE` drops notifications with another or no `clientState`; output strips `clientState` and adds `kind`
 - Limits: 1 MiB body (413), 10s header and body deadlines, 64 connections
