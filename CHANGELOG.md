@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.13.1-alpha.1 - 2026-11-26
+
+Fork prerelease: upstream v0.13.0 with the change below, proposed upstream as osodevops/ms-teams-cli#146.
 
 ### Added
 
