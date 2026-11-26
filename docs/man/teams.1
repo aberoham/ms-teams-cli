@@ -1,4 +1,4 @@
-.TH TEAMS 1 "November 1, 2026" "teams-cli 0.12.0" "User Commands"
+.TH TEAMS 1 "November 25, 2026" "teams-cli 0.13.0" "User Commands"
 .SH NAME
 teams \- Microsoft Teams CLI for Microsoft Graph automation
 .SH SYNOPSIS
@@ -183,7 +183,7 @@ teams message attachments download (--team TEAM_ID --channel CHANNEL_ID [--reply
 teams message attachments delete (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) [--index N] --yes
 teams message reply --team TEAM_ID --channel CHANNEL_ID --message-id MESSAGE_ID [--body TEXT | --stdin] [--content-type text|html] [--image PATH]... [--attach PATH]... [--mention USER]...
 teams message reply --team TEAM_ID --channel CHANNEL_ID --message MESSAGE_ID --body TEXT
-teams message update (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) (--body TEXT | --stdin) [--content-type text|html] [--mention USER]...
+teams message update (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) (--body TEXT | --stdin) [--content-type text|html] [--mention USER]... [--subject TEXT]
 teams message delete (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID) --yes
 teams message undelete (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) (MESSAGE_ID | --message MESSAGE_ID)
 teams message react (--team TEAM_ID --channel CHANNEL_ID [--reply REPLY_ID] | --chat CHAT_ID) --message-id MESSAGE_ID (REACTION | --reaction REACTION)
@@ -286,6 +286,24 @@ sends the body and the mentions array together, so an edit can add or keep a
 mention. The edit replaces the body: repeat
 .B --mention
 for each mention that should stay.
+.PP
+.B message update
+keeps a channel root post's subject and any message's importance: Graph
+resets both when an edit leaves them out (and refuses to edit an urgent
+message), so the message is read first and they are sent back.
+.B message update --subject TEXT
+replaces the subject, and
+.B --subject ""
+removes it. With
+.B --chat
+or
+.B --reply
+it exits 2.
+Reading a channel message needs ChannelMessage.Read.All.
+Without it, a root post edit without
+.B --subject
+exits 4 and sends nothing; other channel edits go ahead without keeping the
+importance.
 .PP
 .B --subject TEXT
 sets the subject line on a channel root message, the bold title Teams shows
@@ -519,6 +537,22 @@ Where tokens are kept:
 writes them unencrypted to mode 0600 files under the config
 directory's tokens/, for unattended processes and hosts without a keyring.
 Any other value is an invalid-input error (exit code 2).
+.TP
+.B HTTPS_PROXY
+Proxy for all HTTPS requests.
+.B NO_PROXY
+lists hosts to reach directly.
+.TP
+.B SSL_CERT_FILE\fR, \fBSSL_CERT_DIR
+A PEM bundle, or directories of PEM certificates, trusted on top of the
+operating system's certificate store (the macOS keychain, the Windows
+certificate store).
+On Linux they are read in place of the system CA bundle, as OpenSSL does,
+and the built-in Mozilla roots stay trusted.
+Use it behind a proxy that inspects TLS when its root CA is not in the
+operating system's store.
+A certificate that does not parse is skipped; a bundle in which none parses
+is a configuration error (exit code 10).
 .TP
 .B RUST_LOG
 Tracing filter, for example

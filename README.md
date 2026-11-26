@@ -8,6 +8,7 @@ Every command returns structured JSON with deterministic exit codes — designed
 [![Release](https://github.com/osodevops/ms-teams-cli/actions/workflows/release.yml/badge.svg)](https://github.com/osodevops/ms-teams-cli/releases)
 [![Latest Release](https://img.shields.io/github/v/release/osodevops/ms-teams-cli)](https://github.com/osodevops/ms-teams-cli/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Sponsor](https://img.shields.io/badge/Sponsor-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/osodevops)
 
 Website: [msteamscli.com](http://msteamscli.com/)
 
@@ -16,6 +17,10 @@ Website: [msteamscli.com](http://msteamscli.com/)
 AI agents need to operate in Microsoft Teams — reading messages, posting updates, managing channels, reacting to events — but there is no comprehensive CLI for Teams. Existing MCP servers cover only a fraction of the Graph API. Bot Framework SDKs assume a conversational UI inside Teams, not an external agent calling in.
 
 **teams-cli** fills this gap: a complete, headless, machine-readable interface to Teams that any agent can call as a subprocess.
+
+## Sponsorship
+
+teams-cli is free and open source. If your company relies on it, please consider [sponsoring it through GitHub Sponsors](https://github.com/sponsors/osodevops). Sponsorship pays for maintaining the GitHub Actions pipelines that test every change on Linux, macOS and Windows and build each release for five platforms, Homebrew and Scoop. It also pays for keeping up with Microsoft Graph API changes, security fixes and documentation.
 
 ## Agent Integration Contract
 
@@ -428,6 +433,7 @@ teams message get --chat <chat-id> <msg-id>
 teams message attachments delete --chat <chat-id> --message <msg-id> [--index N] --yes
 teams message reply --team <team-id> --channel <channel-id> --message <msg-id> --mention <user-id-or-upn> --body "Thanks!"
 teams message update --team <team-id> --channel <channel-id> --message <msg-id> --body "Corrected"
+teams message update --team <team-id> --channel <channel-id> --message <msg-id> --subject "New subject" --body "Corrected"
 teams message update --chat <chat-id> --message <msg-id> --body "Corrected"
 teams message update --chat <chat-id> --message <msg-id> --mention <user-id-or-upn> --body "Corrected, {@0}"
 teams message update --team <team-id> --channel <channel-id> --reply <reply-id> <parent-msg-id> --content-type html --body "<p>Corrected</p>"
@@ -489,6 +495,15 @@ subject". Channel messages only: chat messages have no subject, so `--subject` w
 subject Graph stores, so a posted subject survives a read-back. Human message lists
 include a Subject column; plain lists include subjects even when the first message
 is untitled. JSON continues to omit the subject field when it is absent.
+
+`message update` keeps a channel root post's subject and any message's importance.
+Graph resets both when an edit leaves them out (a subject to none, `high` to `normal`,
+and it refuses to edit an `urgent` message), so the CLI reads the message first and
+sends them back. `message update --subject TEXT` replaces the subject and `--subject ""`
+removes it. Chat messages and replies have no subject, so `--subject` with `--chat` or
+`--reply` exits 2. Reading a channel message needs `ChannelMessage.Read.All`; without
+it, an edit of a root post stops with exit code 4 unless `--subject` is given, and other
+edits go ahead without keeping the importance.
 
 `message send --chat CHAT_ID --quote MESSAGE_ID` sends a quote-reply, as the
 Teams client's Reply does in a chat: the quoted message renders as a card above
@@ -804,6 +819,8 @@ auth_flow = "device-code"
 | `TEAMS_CLI_SCOPES` | Delegated OAuth scopes for login (same precedence as `--scopes`; ignored by client credentials) |
 | `TEAMS_CLI_ACCESS_TOKEN` | Pre-obtained Microsoft Graph access token (skips login entirely; `--profile`/`TEAMS_CLI_PROFILE` do not affect which token is used) |
 | `TEAMS_CLI_CLIENT_STATE` | Secret `teams listen` requires in each notification's `clientState` (same as `--client-state`) |
+| `HTTPS_PROXY` | Proxy for all HTTPS requests (`NO_PROXY` lists hosts to reach directly) |
+| `SSL_CERT_FILE` / `SSL_CERT_DIR` | PEM certificate bundle / directories of PEM files to trust on top of the operating system's certificate store (on Linux in place of the system bundle, as with OpenSSL); see [troubleshooting](docs/troubleshooting.md#network_error-behind-a-tls-inspecting-proxy) |
 | `RUST_LOG` | Tracing filter (e.g., `debug`, `teams=trace`) |
 
 ## Verbosity
