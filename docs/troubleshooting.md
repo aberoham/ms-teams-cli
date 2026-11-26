@@ -231,6 +231,43 @@ If you decline consent or the identity platform refuses the sign-in, the
 login fails at once with its `error` and `error_description` (exit code 3).
 With no callback at all, it gives up after 10 minutes.
 
+## `NETWORK_ERROR` behind a TLS-inspecting proxy
+
+A proxy that inspects TLS re-signs server certificates with your
+organisation's own root CA. The CLI has the operating system verify server
+certificates (the macOS keychain and trust settings, the Windows certificate
+store, the system CA bundle on Linux), so a root installed and trusted there
+works without configuration. On Linux, Mozilla's public roots are built in as
+well, so the CLI also works where the system has no CA bundle. The proxy
+itself is taken from `HTTPS_PROXY`.
+
+If requests still fail with `NETWORK_ERROR` (exit code `7`), often only for
+the hosts the proxy inspects, the root is not trusted. The message names the
+cause, in the operating system's words, and ends with a hint:
+
+```text
+Network error: error sending request for url (https://graph.microsoft.com/v1.0/me): client error (Connect): invalid peer certificate: UnknownIssuer
+Hint: this machine does not accept the server's certificate. ...
+```
+
+On macOS the cause reads like `invalid peer certificate:
+Other(OtherError("“Example Proxy Root” certificate is not trusted: -67843"))`.
+
+Have the root installed in the OS store, or point `SSL_CERT_FILE` at a PEM
+bundle that contains it:
+
+```bash
+SSL_CERT_FILE=/path/to/ca-bundle.pem teams user me --output json
+```
+
+`SSL_CERT_FILE` (a PEM bundle) and `SSL_CERT_DIR` (directories of PEM files)
+are trusted on top of the operating system's store on macOS and Windows. On
+Linux they are read in place of the system bundle, as OpenSSL does, with the
+built-in Mozilla roots still trusted. A certificate in them that does not parse
+is skipped with a warning; a bundle in which none parses fails every command
+with `CONFIG_ERROR` (exit code `10`) before anything is sent. A path that does
+not exist is skipped.
+
 ## Rate limiting
 
 Exit code `6` means rate limited after retries.

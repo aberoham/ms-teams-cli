@@ -1,6 +1,6 @@
 [package]
 name = "teams-cli"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 rust-version = "1.89"
 license = "MIT"
@@ -20,7 +20,9 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "form", "query", "rustls", "gzip", "stream"] }
+# Certificate parsing for the SSL_CERT_FILE / SSL_CERT_DIR roots (no crypto provider of its own).
+rustls = { version = "0.23", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1"
@@ -48,10 +50,17 @@ bytes = "1"
 mime_guess = "2"
 tempfile = "3"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Mozilla's roots, merged on Linux so a static binary works where the system has no CA bundle.
+webpki-root-certs = "1"
+
 [dev-dependencies]
 wiremock = "0.6"
 assert_cmd = "2"
 predicates = "3"
+# A TLS-inspecting proxy for tests/cli.rs: rcgen issues its root and leaf, rustls serves them.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
 [features]
 integration = []

@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## v0.13.0 - 2026-11-25
+
+### Added
+
+- `teams message update --subject TEXT` changes a channel root post's subject; `--subject ""` removes it. With `--chat` or `--reply` it is a usage error (exit code 2), as on `message send`.
+
+### Fixed
+
+- `teams message update` no longer clears a channel root post's subject or resets a message's importance, and can now edit an `urgent` chat message. Graph's PATCH treats a field the request leaves out as a change: the subject went to none, `high` dropped to `normal`, and an urgent message was refused with 403 (`PERMISSION_DENIED`). The command now reads the message first and sends both back. Reading a channel message needs `ChannelMessage.Read.All`. Without it, a root post edit with no `--subject` stops with exit code 4 and sends nothing, rather than clear the subject; a reply, or a post given `--subject`, is edited as before.
+- `url` moves to 2.5.9, which fixes a stack overflow in `Url::origin()` on nested `blob:` URLs (RUSTSEC-2026-0592). `clap` 4.6.9, `clap_complete` 4.6.12, `webbrowser` 1.2.7, `uuid` 1.29.3 and `bytes` 1.12.2 are patch updates.
+
+### Changed
+
+- HTTP moves to `reqwest` 0.13. Server certificates are now verified by the operating system's own verifier (`rustls-platform-verifier`: the Security framework on macOS, CryptoAPI on Windows, the system CA bundle on Linux) instead of copying the OS store into rustls before every client is built. That removes the ~125 ms the keychain scan added to every command on macOS in v0.12.1, and applies the OS's own distrust settings, name constraints and revocation checks. TLS crypto moves from `ring` to `aws-lc-rs`, reqwest's default provider; the binaries grow by about 1.4 MB.
+- `SSL_CERT_FILE` / `SSL_CERT_DIR` are trusted on top of the OS store on macOS and Windows (they used to replace it); on Linux they still replace the system CA bundle. Mozilla's public roots stay built in on Linux only, so a static binary still works in a container without a CA bundle; macOS and Windows rely on the OS store. A certificate in the bundle that does not parse is still skipped, now with a warning on stderr, and a bundle in which none parses is still `CONFIG_ERROR`.
+- The hint on an untrusted certificate now appears on macOS too, where the Security framework describes the failure in its own words rather than as `UnknownIssuer`.
+
+## v0.12.1 - 2026-11-18
+
+### Fixed
+
+- HTTPS requests now trust the operating system's certificate store (the macOS keychain, the Windows certificate store, the system CA bundle on Linux) as well as the built-in public roots. Behind a proxy that inspects TLS and re-signs certificates with an organisation's own root CA, every request to an inspected host used to fail with `NETWORK_ERROR` (rustls `UnknownIssuer`) even though the OS trusted that root. `SSL_CERT_FILE` and `SSL_CERT_DIR` are honoured on every platform and are read instead of the OS store.
+- `NETWORK_ERROR` messages now carry the cause reqwest keeps out of its own text (`invalid peer certificate: UnknownIssuer`, `Connection refused`, a timeout), and an untrusted certificate adds a hint on trusting the proxy's root.
+- A certificate bundle with no usable certificate (`SSL_CERT_FILE` / `SSL_CERT_DIR`) is a `CONFIG_ERROR` (exit code 10) for every command. The sign-in flows used to panic on a failed HTTP client build.
+- The browser sign-in on WSL2 no longer passes the authorize URL through `cmd.exe`: `webbrowser` 1.2.6 fixes a command injection there (GHSA-j2mc-vg6q-w75p). `uuid` moves to 1.29.0, and `quinn-proto` 0.11.19, `quinn-udp` 0.5.16 and `rustix` 1.1.6 clear RUSTSEC-2026-0523, RUSTSEC-2026-0524, RUSTSEC-2026-0538 and RUSTSEC-2026-0486 from `cargo audit`. The release workflow's `softprops/action-gh-release` pin moves to v3.0.4.
+- The `x86_64-apple-darwin` binary is cross-compiled on an Apple Silicon runner: GitHub retired the macOS 14 runner images on 2026-11-02, which cancelled the first v0.12.1 release run. Both macOS builds now check the binary's architecture and that `teams --version` prints only the tagged version (the x86_64 one under Rosetta 2) before packaging.
+
 ## v0.12.0 - 2026-11-01
 
 ### Added

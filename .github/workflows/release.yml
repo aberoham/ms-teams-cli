@@ -111,8 +111,10 @@ jobs:
     strategy:
       matrix:
         include:
+          # GitHub retired the macOS 14 images on 2026-11-02 and is phasing out Intel
+          # images, so x86_64 is cross-compiled on Apple Silicon like aarch64.
           - target: x86_64-apple-darwin
-            runner: macos-15-intel
+            runner: macos-latest
             archive: tar.gz
           - target: aarch64-apple-darwin
             runner: macos-latest
@@ -154,6 +156,26 @@ jobs:
       - name: Build (native)
         if: "!matrix.cross"
         run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Verify binary (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          bin="target/${{ matrix.target }}/release/teams"
+          case "${{ matrix.target }}" in
+            x86_64-*) arch=x86_64 ;;
+            aarch64-*) arch=arm64 ;;
+          esac
+          file "$bin"
+          file "$bin" | grep -q "executable ${arch}$"
+          # The x86_64 binary runs under Rosetta 2 on Apple Silicon.
+          if [ "$arch" = x86_64 ] && ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
+          # Only the version: a storage namespace here means a debug-namespace build.
+          version="$(arch -"$arch" "$bin" --version)"
+          echo "$version"
+          # A mirror runs from a branch, so compare against the version tag, not the ref.
+          test "$version" = "teams ${VERSION_TAG#v}"
 
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'
@@ -317,7 +339,7 @@ jobs:
       # rather than generating its own. A tag push's tag already exists, so
       # target_commitish does not apply to it.
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
