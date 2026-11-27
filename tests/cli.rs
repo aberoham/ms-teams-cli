@@ -2652,3 +2652,45 @@ fn presence_hold_retries_after_a_usage_error() {
             "Could not set presence to Available",
         ));
 }
+
+/// `--history` is checked by clap, so a value that is not `all`, `none` or an
+/// RFC 3339 timestamp is a usage error before any credentials are needed.
+#[test]
+fn chat_members_add_rejects_a_history_value_that_is_not_rfc3339() {
+    teams()
+        .args([
+            "chat",
+            "members",
+            "add",
+            "19:abc@thread.v2",
+            "--user-id",
+            "user-id",
+            "--history",
+            "2026-11-01",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("RFC 3339"));
+}
+
+/// The README forms of `--history` parse; they then stop at authentication.
+#[test]
+fn chat_members_add_documented_history_forms_parse() {
+    for value in ["all", "none", "2026-11-01T00:00:00Z"] {
+        teams()
+            .args([
+                "chat",
+                "members",
+                "add",
+                "19:abc@thread.v2",
+                "--user-id",
+                "user-id",
+                "--history",
+                value,
+                "--output",
+                "json",
+            ])
+            .assert()
+            .code(3);
+    }
+}
