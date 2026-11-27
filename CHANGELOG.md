@@ -6,7 +6,7 @@ Fork prerelease: upstream v0.13.0 with the changes in v0.13.1-alpha.1 and the ch
 
 ### Added
 
-- `teams chat members add --history all|none|TIMESTAMP` sets how much earlier chat history the new member sees. `all` shares the whole history (Graph's `visibleHistoryStartDateTime` of `0001-01-01T00:00:00Z`), an RFC 3339 timestamp shares messages from that time on, and `none` shares nothing. Without the option the request is unchanged and shares no history. A value that is not `all`, `none` or RFC 3339 is a usage error (exit code 2) before any request is sent. Team and channel member adds never send the field, and `chat create` does not take the option, because a new chat has no earlier history.
+- `teams chat members add --history all|none|TIMESTAMP` sets how much earlier chat history the new member sees. `all` shares the whole history (Graph's `visibleHistoryStartDateTime` of `0001-01-01T00:00:00Z`), an RFC 3339 timestamp shares messages from that time on, and `none` shares nothing. In JSON output, the member record the command prints and `chat members list` now include `visibleHistoryStartDateTime` when Graph returns it; the human table is unchanged. Without the option the request is unchanged and shares no history. A value that is not `all`, `none` or RFC 3339 is a usage error (exit code 2) before any request is sent. Team and channel member adds never send the field, and `chat create` does not take the option, because a new chat has no earlier history.
 
 ### Fixed
 
